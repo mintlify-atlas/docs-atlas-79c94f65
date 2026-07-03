@@ -22,9 +22,6 @@ Use `simterm-engine` directly when you want to:
 ```toml
 [dependencies]
 simterm-engine = { path = "../engine" }  # workspace
-
-# or from crates.io when published:
-# simterm-engine = "0.2"
 ```
 
 ## Minimal usage example
@@ -66,10 +63,11 @@ These are the **immutable** definition types loaded from a campaign's RON files.
 | `Theme` | Branding and cosmetic text overrides for the campaign |
 | `EasterEgg` | A flavor-only hidden command defined in campaign data |
 | `Language` | Narrative language selection (`Es` or `En`) |
+| `EngineText` | Localized string accessor obtained from `Language::text()`; provides all engine-generated UI strings |
 | `EnumTool` | Static definition of an enumeration tool (name, affinities, noise, hit rates) |
 | `ServiceCat` | Service category inferred from a service name (`Web`, `Smb`, `Ssh`, `Db`, `Other`) |
 | `IntelFinding` | A discovered finding in the intel list |
-| `FindingSource` | How a finding was produced (`PortScan`, `DeepScan`) |
+| `FindingSource` | How a finding was produced (`PortScan`, `DeepScan`, `Guess`) |
 | `FindingStatus` | Current state of a finding (`Unverified`, `VerifiedTrue`, `VerifiedFalse`, `Failed`, `Exploited`) |
 
 ### Command types

@@ -17,13 +17,14 @@ Every system command derives its output from existing state rather than authored
 - `env` merges derived variables with `campaign.env` and any session overrides set via `export`.
 - `whoami` / `id` reflects whether you have a foothold and whether you are root.
 
-The system commands that describe the host (`uname`, `ps`, `netstat`, `ifconfig`, `env`, `export`) require an active shell — they return `bash: <verb>: command not found` (exit 127) if called without a foothold.
+The system commands that describe the host (`uname`, `hostname`, `ps`, `netstat`, `ss`, `ifconfig`, `ip`, `env`, `export`) require an active shell — they return `bash: <verb>: command not found` (exit 127) if called without a foothold.
 
 ## Synthesized System Commands
 
 | Command | Synthesized from |
 |---|---|
-| `whoami` / `id` | Root vs user session; produces `uid=0(root)` or `uid=1000(user)` |
+| `whoami` | Root vs user session; prints the current username (`root` or `user`) |
+| `id` | Root vs user session; produces `uid=0(root)` or `uid=1000(user)` |
 | `uname [-a]` | `os` + hostname; `-a` produces the full Linux kernel string |
 | `hostname [-f]` | Host name (short without `-f`; FQDN with `-f`) |
 | `ps [aux]` | `services` (name→process) + base procs (`init`, `sshd`) + `processes` |

@@ -70,6 +70,7 @@ pub struct Mission {
     pub skill: f32,
     pub root_difficulty: u8,
     pub objective: Option<String>,
+    pub debrief: Vec<String>,
     pub entry: EntryVector,
     pub endings: Vec<Ending>,
     pub target: TargetNode,
@@ -89,6 +90,7 @@ pub struct Mission {
 | `skill` | Base operator skill for probability calculations (`0.0–1.0`) |
 | `root_difficulty` | Privilege escalation difficulty (`1–10`; default `5`) |
 | `objective` | VFS path of the file to exfiltrate; `None` means root via `privesc` completes the mission |
+| `debrief` | Lore lines printed after the mission is completed |
 | `entry` | How the mission starts (see `EntryVector`) |
 | `endings` | Branching endings shown at mission close; empty = direct close |
 | `target` | The single target host (classic single-host mode) |

@@ -1,5 +1,5 @@
 ---
-title: "Validating Campaigns with --check and --doctor"
+title: "Simterm Campaign Validation: --check and --doctor Guide"
 sidebarTitle: "Validation"
 description: "Reference for Simterm's two validation modes, the full list of --doctor errors and warnings, troubleshooting common issues, and the validate_campaign API."
 ---
@@ -60,13 +60,20 @@ These conditions are suspicious but do not break the campaign. They still load a
 | `time_limit` is `Some(0)` | A time limit of zero ticks causes instant defeat. |
 | Vulnerability `difficulty` out of range | A `Vulnerability.difficulty` is outside `1..=10`. |
 | `accepts_token` never obtainable | A host's `accepts_token` value is not produced by any loot anywhere in the campaign. `login` will never work on that host. |
+| Network has no `entry` host | No `NetHost` in a `network` list has `entry: true`. The engine falls back to the first host, which may not be what you intended. |
+| Easter egg defines no trigger | An `EasterEgg` block has an empty `triggers` list and can never fire. |
 | Easter egg trigger collides with built-in | An `EasterEgg.triggers` entry matches a built-in verb. The easter egg will be shadowed and never fire. |
+| Campaign command defines no trigger | A `CampaignCommand` block has an empty `triggers` list and can never fire. |
 | Campaign command trigger collides with built-in | A `CampaignCommand.triggers` entry matches a built-in verb. |
-| Terminal command trigger collides with built-in | A `TerminalCommand.triggers` entry matches a built-in or system command. |
 | Campaign command trigger collides with easter egg | A `CampaignCommand.triggers` entry also appears in an easter egg — the command takes priority, which may not be intended. |
-| Duplicate trigger across commands | The same trigger string appears in more than one `CampaignCommand` or more than one `TerminalCommand`. |
+| Duplicate trigger across campaign commands | The same trigger string appears in more than one `CampaignCommand`. |
 | Achievement `ReadFile` path not in any VFS | A `ReadFile` trigger path doesn't match any file in any host's filesystem — the achievement can never unlock. |
 | `FlagSet` condition for unset flag | A `CommandCondition::FlagSet("flag")` references a flag that no command ever activates with `SetFlag`. The command can never become available. |
+| Empty `env` key name | A key in the `env` map is an empty or whitespace-only string. |
+| Terminal command defines no trigger | A `TerminalCommand` block has an empty `triggers` list and can never fire. |
+| Terminal command trigger collides with built-in | A `TerminalCommand.triggers` entry matches a built-in or system command. |
+| Terminal command trigger collides with declarative command | A `TerminalCommand.triggers` entry also appears in a `CampaignCommand` — the declarative command takes priority. |
+| Duplicate trigger across terminal commands | The same trigger string appears in more than one `TerminalCommand`. |
 | `TerminalCommand.exit` out of range | An exit code is outside `0..=255`. |
 | `{env:NAME}` references undefined variable | A `TerminalCommand` output template references an `env` variable that is neither in `campaign.env` nor automatically derived (`USER`, `LOGNAME`, `HOME`, `PWD`, `SHELL`, `HOSTNAME`). |
 

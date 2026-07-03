@@ -1,7 +1,7 @@
 ---
 title: "Engine Runtime: GameState and Player Actions"
 sidebarTitle: "Runtime"
-description: "Reference for GameState, Phase, GameOutcome, every actions:: function, ShellOutput, asset sources, and the detection model."
+description: "Reference for GameState fields, Phase and GameOutcome enums, every actions:: function signature, ShellOutput, asset sources, and the detection model."
 ---
 
 The engine runtime is the mutable half of `simterm-engine`. `GameState` holds every piece of live session data, and the `actions` module provides pure functions that take a `&mut GameState` and transform it. No frontend code is required to drive the loop — you can run an entire campaign headlessly by calling actions in sequence and reading the `game.logs` vector after each one.
@@ -30,7 +30,6 @@ let mut game = GameState::new(campaign);
 | `detection_limit` | `f32` | Threshold from the mission; reaching it triggers defeat |
 | `intel` | `Vec<IntelFinding>` | All findings discovered so far on the active host |
 | `is_root` | `bool` | Whether the player has root on the active host |
-| `phase` | `Phase` | `Recon` → `Enum` → `Exploit` → `Post` |
 | `pivoted` | `bool` | Whether `connect` has established the bastion tunnel (Pivot entry only) |
 | `discovered_ports` | `Vec<u16>` | Ports revealed by recon on the active host |
 | `cwd` | `Vec<String>` | Current VFS working directory as path components; empty = `/` |
@@ -43,7 +42,7 @@ let mut game = GameState::new(campaign);
 | `outcome` | `Option<GameOutcome>` | `None` while running; `Some(Victory)` or `Some(Defeat)` when over |
 | `clock` | `u32` | Tick counter for the current mission |
 | `campaign_clock` | `u32` | Cumulative ticks across all missions |
-| `achieved` | `Vec<AchievementId>` | Built-in engine achievements unlocked |
+| `achievements` | `Vec<AchievementId>` | Built-in engine achievements unlocked |
 | `campaign_achievements` | `Vec<String>` | Data-driven campaign achievement ids unlocked |
 
 ## Phase
@@ -161,6 +160,12 @@ pub fn cleanup(state: &mut GameState)
 
 Active trace reduction. Probability of success decreases with each successive cleanup in the same mission. A failed cleanup backfires and adds more trace.
 
+```rust
+pub fn loot(state: &mut GameState)
+```
+
+Displays the current loot inventory: looted file count, cumulative skill bonus, and all credentials collected across the campaign. Requires a foothold.
+
 ### VFS operations
 
 All VFS actions require a foothold (`Phase::Post`) first.
@@ -203,6 +208,12 @@ pub fn campaign_command(state: &mut GameState, verb: &str) -> bool
 ```
 
 Looks up a `CampaignCommand` by trigger verb, evaluates all its `CommandCondition`s, and applies its `CommandEffect`s in order. Returns `true` if a matching available command was found and executed, `false` if the verb should fall through to easter-egg lookup. This is the integration point between the frontend's command parser and the engine's declarative command system.
+
+```rust
+pub fn terminal_command(state: &mut GameState, verb: &str, arg_line: &str) -> bool
+```
+
+Dispatches an authored `TerminalCommand` by verb, rendering its output lines through the template engine (substituting `{clock}`, `{user}`, `{host}`, `{env:VAR}`, and `$VAR`). Sets `game.last_exit` to the command's configured exit code. Returns `true` if a matching terminal command was found and executed.
 
 ## ShellOutput
 

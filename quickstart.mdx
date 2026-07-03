@@ -1,5 +1,5 @@
 ---
-title: "Get Started with Simterm in 5 Minutes"
+title: "Simterm Quickstart: Run and Build Your First Campaign"
 sidebarTitle: "Quickstart"
 description: "Clone Simterm, run the sample campaign, explore every CLI flag, and copy-paste your first custom campaign — all in under five minutes."
 ---
@@ -43,8 +43,12 @@ The `simterm` binary accepts the following flags. Pass them after `--` when usin
 
 **Select a campaign**
 
+`--campaign` (or its short form `-c`) specifies the path to a campaign directory or `.ron` file. You can also pass the path as a bare positional argument without the flag.
+
 ```bash
 cargo run -p simterm -- --campaign ./examples/sample_campaign
+cargo run -p simterm -- -c ./examples/sample_campaign
+cargo run -p simterm -- ./examples/sample_campaign
 ```
 
 **Validate without opening the TUI**
@@ -93,10 +97,19 @@ cargo run -p simterm -- --autoplay --autoplay-delay 300 --campaign ./examples/sa
 
 **Disable music**
 
-Simterm plays looped WAV audio when a campaign provides `music/mission_N_theme.wav` files alongside `campaign.ron`. Pass `--no-music` to silence it regardless.
+Simterm plays looped WAV audio when a campaign provides `music/mission_N_theme.wav` files alongside `campaign.ron`. Pass `--no-music` (or its alias `--mute`) to silence it regardless.
 
 ```bash
 cargo run -p simterm -- --no-music --campaign ./examples/sample_campaign
+cargo run -p simterm -- --mute --campaign ./examples/sample_campaign
+```
+
+**Print help**
+
+`--help` (or `-h`) prints the usage summary and exits immediately without loading any campaign.
+
+```bash
+cargo run -p simterm -- --help
 ```
 
 ## Create your first campaign
