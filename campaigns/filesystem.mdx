@@ -1,0 +1,198 @@
+---
+title: "Virtual Filesystem: Files, Loot, and Puzzles"
+sidebarTitle: "Filesystem"
+description: "How to build the virtual filesystem for Simterm target hosts, including loot, hash cracking, binary reversing, and encoded file puzzles."
+---
+
+Each `TargetNode` can carry a `filesystem` — a tree of `FsNode` values that the player navigates during the post-exploitation phase using familiar shell commands (`ls`, `cd`, `cat`, `find`). Beyond plain text files, the VFS supports mechanical loot rewards, offline hash-cracking puzzles, binary reversing challenges, and encoded blobs — all defined declaratively in RON.
+
+## FsNode variants
+
+There are exactly two variants:
+
+### `Dir`
+
+A directory that contains child nodes.
+
+```ron
+Dir(name: "etc", children: [
+    Dir(name: "nginx", children: [
+        File(name: "nginx.conf", content: ["worker_processes 4;"]),
+    ]),
+]),
+```
+
+### `File`
+
+A file with optional content, access control, loot, binary metadata, and encoding.
+
+```ron
+File(
+    name: "shadow",
+    content: ["root:$6$rounds=5000$xyz$HASH:19000:0:99999:7:::"],
+    root: true,
+    loot: Some((
+        hash: Some((
+            algo: "sha512crypt",
+            strength: 7,
+            needs_wordlist: true,
+            yields: Token("admin-token"),
+        )),
+    )),
+)
+```
+
+### File struct fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | **required** | File name shown by `ls`. |
+| `content` | string list | `[]` | Lines shown by `cat`. For encoded/binary files this is the plaintext the player must recover. |
+| `root` | bool | `false` | Requires root access to read. Files marked `root: true` are shown in `ls` output but `cat` is blocked until the player has escalated. |
+| `loot` | `Some(Loot)` or `None` | `None` | Reward granted the first time the file is successfully read or decoded. |
+| `binary` | `Some(Binary)` or `None` | `None` | Marks the file as a reversible binary. `cat` is blocked; the player uses `strings`/`disasm`/`solve`. |
+| `encoding` | `Some(Encoding)` or `None` | `None` | Marks the file as encoded. `cat` shows the encoded blob; the player uses `base64` or `xor` to recover the plaintext. |
+
+## Loot
+
+`Loot` is the reward the engine grants the first time a file is read (or decoded). All fields are optional — a `Loot` block with no fields is valid and simply signals "this file was read" without any mechanical effect.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `skill` | f32 | `0.0` | Persistent skill bonus applied for the rest of the campaign. |
+| `credential` | `Some("string")` or `None` | `None` | Credential saved to the player's inventory (narrative/flavor). |
+| `note` | `Some("string")` or `None` | `None` | Hint line displayed when the loot is collected. |
+| `privesc_key` | bool | `false` | When `true`, reading this file enables deterministic `privesc`. |
+| `foothold_token` | `Some("token")` or `None` | `None` | Token saved to inventory; reusable with `login` on hosts whose `accepts_token` matches. |
+| `wordlist` | bool | `false` | When `true`, reading this file grants the campaign wordlist, enabling hash attacks that `needs_wordlist: true`. |
+| `hash` | `Some(LootHash)` or `None` | `None` | Embedded hash crackable with `john`/`hashcat`. See Hash puzzles below. |
+
+### `privesc_key`
+
+Set `privesc_key: true` on a file that is readable **without** root. When the player reads it, `privesc` becomes deterministic for that host. This is the standard route to root: hide the key in a non-root file the player has to find, then protect the objective behind root access.
+
+### `foothold_token`
+
+A `foothold_token` is a string value stored in the player's inventory. On any subsequent host where `TargetNode.accepts_token` equals that string, the player can run `login` to get a foothold without going through the probabilistic `exploit` path.
+
+## Hash puzzles
+
+Add a `hash` block inside `Loot` to create an offline cracking puzzle. The player uses `john` or `hashcat`; the attack costs clock ticks but adds no network trace.
+
+```ron
+loot: Some((
+    hash: Some((
+        algo: "sha512crypt",
+        strength: 6,
+        needs_wordlist: true,
+        yields: Token("relay-token"),
+    )),
+))
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `algo` | string | **required** | Algorithm label shown to the player (e.g. `"ntlm"`, `"bcrypt"`, `"sha512crypt"`). |
+| `strength` | u8 | `5` | Cracking difficulty `1..=10`. Higher means lower probability per attempt. |
+| `needs_wordlist` | bool | `false` | When `true`, the attack is infeasible without a wordlist the player must find elsewhere in the campaign. |
+| `yields` | `Reward` | **required** | What the player receives on success. |
+
+## Binary reversing
+
+Set `binary` on a file to make it a reversing puzzle. `cat` is blocked — the player must use `strings` to view printable strings, `disasm` (also `objdump`, `r2`) to view the pseudo-disassembly, and `solve <path> <secret>` to submit the extracted secret.
+
+```ron
+binary: Some((
+    strings: ["usage: authd [TOKEN]", "cmp_key: verify token"],
+    disasm: ["cmp eax, 0x1f3b", "jne 0x40112c"],
+    secret: "AX29",
+    yields: PrivescKey,
+    hint: Some("The key is embedded in the comparison immediate."),
+)),
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `strings` | string list | `[]` | Output of `strings` (printable strings, some decoys). |
+| `disasm` | string list | `[]` | Output of `disasm`/`objdump`/`r2` (pseudo-disassembly or decompiled fragment). |
+| `secret` | string | **required** | The answer the player submits with `solve`. Case-insensitive comparison. |
+| `yields` | `Reward` | **required** | Reward granted on a correct `solve`. |
+| `hint` | `Some("string")` or `None` | `None` | Hint line shown alongside the `strings` output. |
+
+## Encoded files
+
+Set `encoding` to make a file's `content` retrievable only by decoding. `cat` shows the encoded blob; the player must use `base64` or `xor` to recover the plaintext.
+
+```ron
+// Base64-encoded file
+encoding: Some(Base64),
+
+// XOR-encoded file with a known key
+encoding: Some(Xor("key")),
+```
+
+Commands:
+- `base64 <path>` — decodes a `Base64`-encoded file.
+- `xor <path> <key>` — decodes an `Xor`-encoded file with the correct key.
+
+Using the wrong tool, or the wrong key for XOR, returns an error without revealing the content.
+
+## Reward enum
+
+All puzzle rewards (`hash.yields`, `binary.yields`) use the same `Reward` type as `Loot` fields:
+
+| Variant | Effect |
+|---|---|
+| `Skill(f32)` | Adds a persistent skill bonus. |
+| `Credential(String)` | Saves a credential string to inventory. |
+| `Token(String)` | Saves a foothold token; usable with `login` on matching hosts. |
+| `PrivescKey` | Enables deterministic `privesc` on the current host. |
+
+## VFS layout example
+
+The following is adapted from the sample campaign's first mission and shows how `Dir`/`File` nesting, `loot`, and `root` interact:
+
+```ron
+filesystem: [
+    Dir(name: "home", children: [
+        Dir(name: "alumno", children: [
+            Dir(name: ".ssh", children: [
+                File(
+                    name: "id_rsa",
+                    content: ["-----BEGIN OPENSSH PRIVATE KEY-----"],
+                    // Readable without root — this IS the path to root.
+                    root: false,
+                    loot: Some((
+                        privesc_key: true,
+                        note: Some("Local key: enables safe privesc."),
+                    )),
+                ),
+            ]),
+        ]),
+    ]),
+    Dir(name: "var", children: [
+        Dir(name: "www", children: [
+            File(
+                name: "notes.txt",
+                content: ["TODO: change default password demo:demo"],
+                loot: Some((
+                    skill: 0.05,
+                    credential: Some("demo:demo"),
+                )),
+            ),
+        ]),
+    ]),
+    Dir(name: "root", children: [
+        File(
+            name: "flag.txt",
+            content: ["FLAG{mission_complete}"],
+            // Requires root to read — this is the objective.
+            root: true,
+        ),
+    ]),
+]
+```
+
+<Tip>
+  Place `privesc_key` loot in a file that does **not** have `root: true`. The purpose of the key is to grant root — it must be readable before the player has escalated. A common pattern is a private key or config file in a user home directory. If you accidentally set `root: true` on the privesc_key file, the player will be stuck in a deadlock where root is needed to get the key needed for root.
+</Tip>

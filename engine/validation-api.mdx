@@ -1,0 +1,167 @@
+---
+title: "Campaign Validation API: validate_campaign"
+sidebarTitle: "Validation API"
+description: "Use validate_campaign to run semantic checks on a loaded Campaign — catch dangling references, missing objectives, verb collisions, and balance issues."
+---
+
+`validate_campaign` is a pure function in `simterm-engine` that performs deep semantic analysis of a loaded `Campaign` value. It has no UI dependency and no side effects — it reads data and returns a report. Any tool, build script, or custom frontend can call it directly without importing the `simterm` terminal frontend.
+
+This is distinct from `load_campaign`, which only checks that the RON file is syntactically valid and non-empty. `validate_campaign` goes further: it chases references, checks VFS paths, validates service/vulnerability linkage, detects verb collisions, and warns about balance values outside their expected ranges.
+
+## Function signature
+
+```rust
+pub fn validate_campaign(
+    campaign: &Campaign,
+    reserved_verbs: &[&str],
+) -> ValidationReport
+```
+
+### Parameters
+
+**`campaign`** — A `Campaign` value already loaded by `load_campaign` or `load_open_campaign`. Pass a reference; `validate_campaign` does not consume it.
+
+**`reserved_verbs`** — A slice of verb strings that the frontend treats as built-in commands (`"nmap"`, `"help"`, `"quit"`, etc.). The engine uses this list to detect easter-egg and declarative-command triggers that would be silently shadowed by the built-in command set. Pass `&[]` if you do not have a command registry to consult.
+
+The engine never imports the frontend registry. Instead, the frontend calls `registry::reserved_verbs()` and passes the result here, keeping the engine independent of all presentation code.
+
+## ValidationReport
+
+```rust
+pub struct ValidationReport {
+    pub errors: Vec<ValidationIssue>,
+    pub warnings: Vec<ValidationIssue>,
+}
+```
+
+`errors` contains issues that will cause a campaign to malfunction or be unwinnable. `warnings` contains issues that are suspicious but do not necessarily break anything (balance values out of range, potentially unreachable achievements, etc.).
+
+```rust
+impl ValidationReport {
+    pub fn has_errors(&self) -> bool { /* ... */ }
+    pub fn is_clean(&self) -> bool { /* ... */ }
+}
+```
+
+`has_errors()` is the idiomatic way to decide whether a campaign should be blocked from loading. `is_clean()` returns `true` only when both `errors` and `warnings` are empty.
+
+## ValidationIssue
+
+```rust
+pub struct ValidationIssue {
+    pub location: String,
+    pub message: String,
+}
+```
+
+`location` is a human-readable string such as `"misión 'op1'"`, `"logro 'a1'"`, or `"comando 'inspect'"`. `message` describes the problem in plain language.
+
+## What the validator checks
+
+<Steps>
+  <Step title="Mission structure">
+    Every mission must have a non-empty `id`. Duplicate `id` values across missions are an error. Missions with `skill` outside `[0.0, 1.0]`, `root_difficulty` outside `[1, 10]`, `detection_limit <= 0`, or `time_limit = Some(0)` produce warnings.
+  </Step>
+  <Step title="Service and vulnerability linkage">
+    Every `Vulnerability.affected_service` port must appear in the same host's `services` list. A vulnerability pointing to a non-existent port is an error. Vulnerability `difficulty` outside `[1, 10]` is a warning.
+  </Step>
+  <Step title="Token reachability">
+    If a `Service` sets `requires`, that token must appear in at least one `Loot.foothold_token` or binary/hash `Reward::Token` somewhere in the whole campaign — otherwise the gated service can never be unlocked. Similarly, if `TargetNode.accepts_token` is set but the token is never obtainable, `login` will never work on that host (warning, not error, because `exploit` remains a viable path).
+  </Step>
+  <Step title="VFS objective paths">
+    If a mission or `NetHost` sets an `objective`, the validator confirms that path resolves to a `File` (not a directory, not a non-existent path) in the host's VFS. A dangling objective is an error.
+  </Step>
+  <Step title="Multi-host network consistency">
+    In multi-host missions, host `hostname` values must be unique. Every `links` entry on a `NetHost` must match the hostname or short name of another host in the same network. A missing entry point (`entry: true`) produces a warning (the engine falls back to the first host).
+  </Step>
+  <Step title="Achievement triggers">
+    `CompleteMission(id)` and `ChooseEnding { mission, choice }` triggers must reference real mission ids. `ChooseEnding.choice` must be within the mission's `endings` count. `ReadFile(path)` triggers that point to non-existent VFS files produce a warning.
+  </Step>
+  <Step title="Declarative commands">
+    `UnlockAchievement(id)` effects must reference a defined `CampaignAchievement`. `Mission(id)` and `Phase(name)` conditions must reference real ids and valid phase names (`"recon"`, `"enum"`, `"exploit"`, `"post"`). `FlagSet(name)` conditions where no command ever activates that flag produce a warning (the condition would be permanently false). Duplicate trigger verbs across commands produce a warning.
+  </Step>
+  <Step title="Terminal commands">
+    `exit` codes outside `[0, 255]` produce a warning. Template references like `{env:MY_VAR}` that do not appear in `Campaign.env` or the engine-derived variables (`USER`, `HOME`, `PWD`, `HOSTNAME`, `SHELL`, `LOGNAME`) produce a warning.
+  </Step>
+  <Step title="Verb collisions">
+    Easter-egg and declarative-command triggers that collide with a `reserved_verb` string produce a warning — the built-in command will always shadow them.
+  </Step>
+</Steps>
+
+## Using validate_campaign in a custom tool
+
+```rust
+use simterm_engine::{load_campaign, validate_campaign};
+
+fn main() {
+    let campaign = load_campaign("./my_campaign").unwrap();
+
+    // Pass empty reserved_verbs if you don't have a command registry
+    let report = validate_campaign(&campaign, &[]);
+
+    for issue in &report.errors {
+        eprintln!("ERROR [{}]: {}", issue.location, issue.message);
+    }
+    for issue in &report.warnings {
+        eprintln!("WARN  [{}]: {}", issue.location, issue.message);
+    }
+
+    if !report.errors.is_empty() {
+        std::process::exit(1);
+    }
+}
+```
+
+## LoadError: handling load failures
+
+Before you can call `validate_campaign` you must successfully load the campaign. `load_campaign` returns `Result<Campaign, LoadError>`:
+
+```rust
+pub enum LoadError {
+    NotFound { path: PathBuf, source: std::io::Error },
+    Parse    { path: PathBuf, message: String },
+    Empty    { path: PathBuf },
+}
+```
+
+| Variant | Cause |
+|---------|-------|
+| `NotFound` | The path does not exist or cannot be read |
+| `Parse` | The RON file is syntactically invalid or does not match the `Campaign` struct |
+| `Empty` | The RON parsed successfully but `missions` is empty |
+
+## load_campaign vs load_open_campaign
+
+| Function | Returns | Use when… |
+|----------|---------|-----------|
+| `load_campaign(path)` | `Result<Campaign, LoadError>` | You only need the campaign data (validation, headless testing, custom tooling) |
+| `load_open_campaign(path)` | `Result<OpenCampaign, LoadError>` | You also need to resolve audio or other binary assets from the campaign directory |
+
+`OpenCampaign` pairs the loaded `Campaign` with a `Box<dyn AssetSource>` pointing at the campaign's directory, so the frontend can read music files without knowing the campaign's location.
+
+## How the frontend uses this
+
+The standard `simterm` frontend passes its full command registry into the validator:
+
+```rust
+// Inside the simterm frontend (not in simterm-engine)
+let report = validate_campaign(&campaign, registry::reserved_verbs());
+```
+
+This lets the engine detect easter-egg and declarative-command verb collisions with built-in commands like `nmap`, `exploit`, `help`, and `quit` — without the engine ever importing the registry module. The engine stays independent of the frontend; the frontend decides which verbs to expose as reserved.
+
+<Note>
+`validate_campaign` is the same validation that powers `simterm --doctor`. Running it in a CI script or pre-commit hook catches authoring mistakes before a campaign is shipped to players.
+</Note>
+
+<CardGroup cols={3}>
+  <Card title="Overview" icon="book" href="/engine/overview">
+    Crate re-exports and Cargo.toml setup
+  </Card>
+  <Card title="Data Model" icon="database" href="/engine/data-model">
+    Types that validate_campaign inspects
+  </Card>
+  <Card title="Runtime" icon="play" href="/engine/runtime">
+    Run a validated campaign with GameState
+  </Card>
+</CardGroup>

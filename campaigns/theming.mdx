@@ -1,0 +1,126 @@
+---
+title: "Theming: Brand Your Terminal Experience"
+sidebarTitle: "Theming"
+description: "How to customize the Simterm UI with the Theme struct, stealth grades, defense messages, campaign language, fortunes, and signals."
+---
+
+Every piece of text that belongs to a specific campaign's identity — the app title, boot sequence, prompt, stealth grades, defense alerts, and closing credits — lives in the `theme` block of `campaign.ron`. The engine provides neutral defaults so campaigns that omit `theme` still start cleanly, but a fully themed campaign feels like its own product. No Rust changes are required.
+
+## Theme struct fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `app_title` | string | `"TERMINAL"` | Short title shown in the top status bar chip. |
+| `boot_header` | string | `"T E R M I N A L"` | Large header displayed on the boot overlay when a session opens. |
+| `boot_lines` | string list | `["Enlace establecido.", "Sesión iniciada."]` | Lines typed out with a typewriter effect on the boot overlay. |
+| `overlay_title` | string | `" TERMINAL "` | Title bar shown on briefing/debrief overlays. |
+| `alert_title` | string | `" ALERTA "` | Title bar shown on critical-alert overlays. |
+| `operator_prompt` | string | `"operator@console:~$ "` | Shell prompt shown before the player has a foothold on a target. |
+| `stealth_grades` | string list | `["FANTASMA","LIMPIO","OPERATIVO","DESCUIDADO"]` | Four stealth tier labels, ordered **best to worst** (lowest trace → highest). |
+| `defense_messages` | string list | engine defaults | Messages shown as active defense escalates, one per stage. If fewer messages are provided than stages, the last one is reused. |
+| `aborted_lines` | string list | engine defaults | Lines shown on the "operation aborted" overlay (trace limit reached). |
+| `credits` | string list | `["FIN", "", "Campaña completada."]` | Lines shown in the end-of-campaign credits roll. |
+
+## How `stealth_grades` maps to trace ratio
+
+The engine divides the final trace ratio (0.0 = no trace, 1.0 = detection limit reached) into equal bands and maps each band to a grade. With four grades the bands are:
+
+| Trace ratio band | Grade index | Example value |
+|---|---|---|
+| 0.00 – 0.24 | 0 (best) | `"GHOST"` |
+| 0.25 – 0.49 | 1 | `"CLEAN"` |
+| 0.50 – 0.74 | 2 | `"ACTIVE"` |
+| 0.75 – 1.00 | 3 (worst) | `"EXPOSED"` |
+
+You can provide any number of grades; the engine divides the ratio range into that many equal bands automatically. Most campaigns use four.
+
+## How `defense_messages` map to active defense stages
+
+Active defense escalation is enabled per-mission with `reactive: true`. When reactive mode is on, the blue-team defense activates in stages as the player's trace rises. Each stage shows the corresponding `defense_messages` entry and stiffens exploitation difficulty and trace accumulation.
+
+If your campaign has fewer `defense_messages` entries than defense stages, the engine repeats the last message for all remaining stages. A single message covers all stages; three messages give distinct per-stage escalation language.
+
+```ron
+defense_messages: [
+    "[ALERT] Defender detected your activity. Exploits are harder from here.",
+    "[ALERT] Active countermeasures deployed. Trace accumulates faster.",
+    "[ALERT] Perimeter closing. Finish now or abort.",
+],
+```
+
+## The `language` field
+
+The `language` field is set at the **campaign** level (not inside `theme`):
+
+```ron
+Campaign(
+    name: "My Campaign",
+    language: en,
+    // ...
+)
+```
+
+Accepted values are `en` and `es`. This controls the language used for generic engine-generated UI strings — phase labels, error messages, help text, and similar built-in copy. **Shell output is always POSIX English** regardless of `language` (command output like `ls`, `ps`, and `uname` does not change). Campaign-authored story text — `briefing`, `debrief`, `intro`, file `content`, `theme` strings — is never auto-translated; write it in whatever language your campaign targets.
+
+## Full Theme example
+
+The following is taken directly from the sample campaign:
+
+```ron
+theme: (
+    app_title: "POLÍGONO",
+    boot_header: "P O L Í G O N O",
+    boot_lines: [
+        "Entorno de prácticas inicializado.",
+        "Modo simulación: sin objetivos reales.",
+    ],
+    overlay_title: " POLÍGONO ",
+    alert_title: " ALERTA ",
+    operator_prompt: "alumno@poligono:~$ ",
+    stealth_grades: ["IMPECABLE", "LIMPIO", "VISIBLE", "DESCUIDADO"],
+    defense_messages: [
+        "[SIMULACIÓN] El defensor te ha detectado: a partir de ahora cuesta más.",
+        "[SIMULACIÓN] Contramedidas activas: la traza sube más rápido.",
+        "[SIMULACIÓN] Cerco cerrado: termina ya o suspendes el ejercicio.",
+    ],
+    aborted_lines: [
+        "La traza ha llegado al máximo.",
+        "Ejercicio fallido: te han localizado.",
+        "Vuelve a intentarlo cuando quieras.",
+    ],
+    credits: [
+        "EJERCICIOS COMPLETADOS",
+        "",
+        "Campaña de ejemplo del motor simterm-engine.",
+        "Sustituye este texto por los créditos de tu propia campaña.",
+        "",
+        "FIN DE LA SIMULACIÓN",
+    ],
+),
+```
+
+## Fortunes and signals
+
+Two campaign-level fields feed optional built-in minigames:
+
+**`fortunes`** — a list of aphorism strings used by the `fortune` command. Each call picks one at random. If omitted, the engine uses generic defaults that belong to no specific story:
+
+```ron
+fortunes: [
+    "Read the objective before you act.",
+    "The right tool does half the work.",
+    "Stealth is trained, not improvised.",
+],
+```
+
+**`signals`** — a list of plain-text words intercepted in encoded form by the `signal` minigame. The player receives the encoded version and must identify the word. If omitted, generic defaults are used:
+
+```ron
+signals: ["PRACTICE", "NETWORK", "SHADOW", "OBJECTIVE"],
+```
+
+Both fields accept any UTF-8 strings. Use your campaign's vocabulary and tone to make these feel native to your story.
+
+<Tip>
+  Use `operator_prompt` to brand the shell before the player has compromised a target. The default `"operator@console:~$ "` is deliberately generic — replace it with something that fits your campaign's identity, such as `"ghost@void:~$ "` or `"trainee@range:~$ "`. Once the player gets a foothold, the prompt switches to the target host's user and hostname automatically.
+</Tip>

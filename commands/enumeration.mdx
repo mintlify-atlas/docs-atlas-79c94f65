@@ -1,0 +1,85 @@
+---
+title: "Enumeration Tools and Service Discovery"
+sidebarTitle: "Enumeration"
+description: "How Simterm's tool-affinity model works, which enumeration tool to use on each service type, and how to review and research findings before exploiting."
+---
+
+Enumeration is the phase where you extract vulnerability information from discovered services. Simterm models this as an imperfect-information system: each tool has a natural affinity for certain service categories, and picking the right tool matters. The right tool on the right service produces real vulnerability findings with low noise; the wrong tool generates noise, false positives, and wastes clock ticks. Getting enumeration right is the core skill loop of a Simterm campaign.
+
+## How Tool Affinity Works
+
+Every enumeration tool in the toolbox has a `hit_match` probability (high) and a `hit_other` probability (low) for whether it surfaces a real finding. When you run a mismatched tool, the engine:
+
+- Applies the lower hit probability for real findings.
+- Increases the false-positive rate significantly (up to two extra false positives).
+- Logs a warning that the tool is poorly suited for the service category.
+
+False positives have no `real_vuln_id` attached. Attempting to exploit one costs trace and fails loudly. Use `searchsploit` to build confidence before committing to `exploit`.
+
+## Enumeration Tools
+
+All enumeration tools take a port number as their argument.
+
+```text
+nikto 80
+sqlmap 443
+probe 8080
+```
+
+| Command | Best fit |
+|---|---|
+| `probe <port>` | Generic services — works on anything but with lower precision |
+| `nikto <port>` | Web services (HTTP/HTTPS) |
+| `gobuster <port>` | Web path and file enumeration |
+| `enum4linux <port>` | SMB / NetBIOS-style services |
+| `hydra <port>` | SSH and login-style services — intentionally noisy |
+| `sqlmap <port>` | Web and database services |
+
+Each tool costs clock ticks and adds trace noise. The port must have been discovered during the recon phase first. If a service requires a credential gating token (set via `requires` in the campaign data), enumeration will be rejected without costing any clock or noise until you have the right token.
+
+<Warning>
+`hydra` is intentionally the noisiest tool in the toolbox. It reflects real SSH brute-force behavior: high trace, high detection risk. Reserve it for services where brute-force is the only path and you have detection headroom to spend.
+</Warning>
+
+## Service Category → Recommended Tool Mapping
+
+| Service category | Best tool(s) |
+|---|---|
+| HTTP / HTTPS / web proxy | `nikto`, `gobuster`, `sqlmap` |
+| SSH / login services | `hydra` |
+| SMB / NetBIOS / Windows file sharing | `enum4linux` |
+| MySQL / PostgreSQL / MSSQL / Oracle | `sqlmap`, `probe` |
+| Redis / MongoDB / unknown | `probe` |
+
+When in doubt, `probe` gives a lower but nonzero chance of surfacing real findings on any service type. It is the generic fallback, not the optimal choice.
+
+## Post-Enumeration: Reviewing and Researching Findings
+
+Once findings have been surfaced, use `intel` to review them and `searchsploit` to verify their reality before exploiting.
+
+| Command | Aliases | Purpose |
+|---|---|---|
+| `intel` | | List all discovered findings with ID, name, and estimated confidence |
+| `searchsploit <id>` | `verify <id>`, `research <id>` | Research a finding to raise or lower confidence |
+
+### `intel`
+
+Lists all findings accumulated in the current mission, identified by numeric ID. Each entry shows a title, confidence percentage, and verification status (unverified / verified true / verified false / failed / already exploited). The confidence value is a Laplace-smoothed estimate that shifts with each `searchsploit` call.
+
+```bash
+intel
+```
+
+### `searchsploit <id>`
+
+Runs offline research on a specific finding. Each call has a 78% chance of reading the finding's true nature correctly and updates the confidence by accumulating verified-true and verified-false votes. Because no single call is certain, running `searchsploit` on the same finding multiple times builds a consensus — the confidence converges toward truth. This command costs clock ticks and minimal trace (it is local work, not network noise).
+
+```bash
+searchsploit 1
+verify 3
+research 2
+```
+
+<Tip>
+Check `intel` before calling `exploit`. A finding with more verified-false votes than verified-true votes is likely a false positive — exploiting it wastes a clock tick and adds significant trace. Run `searchsploit` a second or third time on a tied finding to break the deadlock before committing.
+</Tip>

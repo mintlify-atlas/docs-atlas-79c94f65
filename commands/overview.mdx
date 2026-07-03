@@ -1,0 +1,67 @@
+---
+title: "Simterm Command Reference Overview"
+sidebarTitle: "Overview"
+description: "A complete reference for Simterm's built-in commands, covering the four command tiers, input shortcuts, and every general-purpose verb."
+---
+
+Simterm's terminal accepts input from four distinct tiers of commands, resolved in order every time you press Enter. Built-in game commands and emulated POSIX shell verbs are handled by the engine; campaigns can layer declarative commands and authored terminal output on top without writing Rust. If nothing matches, the shell falls back to the familiar `bash: <verb>: command not found`. Understanding this resolution order tells you both what you can type and how campaign authors extend the surface without colliding with the core mechanics.
+
+## Command Tiers and Resolution Order
+
+When you type a verb, Simterm resolves it through the following layers in order. The first match wins.
+
+1. **Built-in / system commands** — implemented by the engine runtime and the frontend. Game-loop verbs (`nmap`, `exploit`, `privesc`, …) change game state; system verbs (`uname`, `ps`, `env`, …) synthesize a realistic POSIX shell from the current host definition. Their metadata lives in a single registry that feeds autocomplete, `help`, and the `--doctor` collision checker.
+2. **Declarative campaign commands** — defined in campaign data via `commands`. They change game state through a fixed set of effects (set flags, add trace, unlock achievements, complete missions) without any Rust. They only fire when their conditions hold.
+3. **Authored terminal commands** — defined via `terminal`. They emit realistic templated output for fictional CLIs (`systemctl`, custom banners, etc.) and do **not** change game state.
+4. **Easter eggs** — defined via `easter_eggs`. They print campaign-authored text and do not change game state.
+5. **`bash: <verb>: command not found`** — the fallback for any verb that matches none of the above.
+
+A campaign cannot override a built-in verb. Run `--doctor` to catch any collision before shipping.
+
+## Shell Tone
+
+Command output is authentic POSIX English regardless of the campaign's configured language: `bash: foo: command not found`, `uid=0(root)`, `cat: x: No such file or directory`. Narrative text — briefings, debriefs, mission log entries, loot notes — still follows the campaign `language`. A Spanish-speaking operator sees English shell output, exactly as they would on a real box.
+
+## Input Quality-of-Life
+
+| Key | Purpose |
+|---|---|
+| `Tab` | Autocomplete command names, tools, paths, and relevant IDs |
+| `Up` / `Down` | Browse command history |
+| `PageUp` / `PageDown` | Scroll the log |
+| `Esc` | Clear the current input line |
+
+## General Commands
+
+These commands are always available regardless of phase, phase or mission.
+
+| Command | Aliases | Purpose |
+|---|---|---|
+| `help` | `h`, `?` | Show in-game command help |
+| `status` | | Show level, phase, shell, clock, detection, and outcome |
+| `logs` | | Jump to the end of the log |
+| `clear` | `cls` | Clear the visible console |
+| `reset` | `newgame` | Restart the campaign and clear saved progress |
+| `quit` | `exit`, `q` | Leave the game |
+| `history` | | Show command history |
+| `echo <text>` | | Print text back to the log |
+
+## Command Reference Pages
+
+<CardGroup cols={2}>
+  <Card title="Recon" icon="radar" href="/commands/recon">
+    Target scanning, passive sniffing, and gateway pivoting for the discovery phase.
+  </Card>
+  <Card title="Enumeration" icon="magnifying-glass" href="/commands/enumeration">
+    Service-specific tools with affinity mechanics, intel review, and searchsploit.
+  </Card>
+  <Card title="Exploitation" icon="bolt" href="/commands/exploitation">
+    Exploit findings, use reusable credentials, clean your tracks, and pivot across hosts.
+  </Card>
+  <Card title="Post-Exploitation" icon="folder-open" href="/commands/post-exploitation">
+    Virtual filesystem navigation, privilege escalation, offline analysis, and loot.
+  </Card>
+  <Card title="System Shell" icon="terminal" href="/commands/system-shell">
+    Emulated POSIX commands synthesized from host data, plus mini-experience verbs.
+  </Card>
+</CardGroup>

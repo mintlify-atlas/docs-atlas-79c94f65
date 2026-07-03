@@ -1,0 +1,292 @@
+---
+title: "Engine Runtime: GameState and Player Actions"
+sidebarTitle: "Runtime"
+description: "Reference for GameState, Phase, GameOutcome, every actions:: function, ShellOutput, asset sources, and the detection model."
+---
+
+The engine runtime is the mutable half of `simterm-engine`. `GameState` holds every piece of live session data, and the `actions` module provides pure functions that take a `&mut GameState` and transform it. No frontend code is required to drive the loop — you can run an entire campaign headlessly by calling actions in sequence and reading the `game.logs` vector after each one.
+
+## GameState
+
+`GameState` is constructed from a loaded `Campaign` and starts the first mission automatically:
+
+```rust
+use simterm_engine::{load_campaign, GameState};
+
+let campaign = load_campaign("./my_campaign").unwrap();
+let mut game = GameState::new(campaign);
+// game is now in Phase::Recon (or Phase::Enum for Cold entry missions),
+// logs contain the intro text and mission header.
+```
+
+### Key fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `campaign` | `Campaign` | The loaded campaign definition (immutable throughout the session) |
+| `target` | `TargetNode` | The currently active host; swapped by `pivot_to` in multi-host missions |
+| `phase` | `Phase` | Current kill-chain phase for the active host |
+| `detection` | `DetectionState` | Trace accumulator for the active host |
+| `detection_limit` | `f32` | Threshold from the mission; reaching it triggers defeat |
+| `intel` | `Vec<IntelFinding>` | All findings discovered so far on the active host |
+| `is_root` | `bool` | Whether the player has root on the active host |
+| `phase` | `Phase` | `Recon` → `Enum` → `Exploit` → `Post` |
+| `pivoted` | `bool` | Whether `connect` has established the bastion tunnel (Pivot entry only) |
+| `discovered_ports` | `Vec<u16>` | Ports revealed by recon on the active host |
+| `cwd` | `Vec<String>` | Current VFS working directory as path components; empty = `/` |
+| `extra_skill` | `f32` | Cumulative skill bonus earned from loot across the whole campaign |
+| `creds` | `Vec<String>` | Credential inventory accumulated across all missions |
+| `foothold_tokens` | `Vec<String>` | Reusable credential tokens for deterministic `login` on accepting hosts |
+| `has_wordlist` | `bool` | Whether a wordlist has been looted (enables cracking certain hashes with `john`) |
+| `flags` | `Vec<String>` | Active campaign flags set by declarative commands |
+| `logs` | `Vec<String>` | All output lines from every action taken this session |
+| `outcome` | `Option<GameOutcome>` | `None` while running; `Some(Victory)` or `Some(Defeat)` when over |
+| `clock` | `u32` | Tick counter for the current mission |
+| `campaign_clock` | `u32` | Cumulative ticks across all missions |
+| `achieved` | `Vec<AchievementId>` | Built-in engine achievements unlocked |
+| `campaign_achievements` | `Vec<String>` | Data-driven campaign achievement ids unlocked |
+
+## Phase
+
+`Phase` represents the kill-chain progression for each host. It only ever advances forward.
+
+```rust
+pub enum Phase {
+    Recon,
+    Enum,
+    Exploit,
+    Post,
+}
+```
+
+| Phase | Entered when… |
+|-------|--------------|
+| `Recon` | Mission starts (default) |
+| `Enum` | At least one port is discovered (or `Cold` entry with seeded ports) |
+| `Exploit` | At least one intel finding exists |
+| `Post` | The player gains a foothold via `exploit` or `login` |
+
+## GameOutcome
+
+```rust
+pub enum GameOutcome {
+    Victory,
+    Defeat,
+}
+```
+
+A `Defeat` is triggered by trace reaching `detection_limit` or by the mission clock exceeding `time_limit`. A `Victory` fires when the last mission is completed (objective exfiltrated or root achieved, depending on the mission definition).
+
+## actions module
+
+All player-facing actions live in `simterm_engine::actions`. Every function takes `&mut GameState` and appends its output to `game.logs`. None of them return display strings; the caller reads `game.logs`.
+
+### Recon
+
+```rust
+pub fn recon(state: &mut GameState)
+```
+
+Active `nmap` scan. Discovers all services on the current target in one pass, advances to `Phase::Enum`, and accumulates noise. Blocked until `connect` is called on `Pivot` entry missions. Extra noise penalty applies on `Passive` entry missions.
+
+```rust
+pub fn sniff(state: &mut GameState)
+```
+
+Passive traffic interception. Reveals services one at a time — very low noise but slow. The preferred first move on `Passive` entry missions.
+
+```rust
+pub fn connect(state: &mut GameState, host: Option<String>)
+```
+
+Establishes a tunnel through a bastion gateway. Only meaningful on `Pivot` entry missions. Must be called before `recon` or `sniff` can discover the real target.
+
+### Enumeration
+
+```rust
+pub fn enumerate(state: &mut GameState, tool_name: &str, port: Option<u16>)
+```
+
+Runs one enumeration tool against a specific discovered port. Tool names correspond to entries in `toolbox::TOOLS` (`"probe"`, `"nikto"`, `"gobuster"`, `"enum4linux"`, `"hydra"`, `"sqlmap"`). Using a tool with an affinity match produces real findings and fewer false positives; a mismatch is noisy and unreliable. Pushes `IntelFinding` entries into `game.intel` and advances to `Phase::Exploit` once at least one finding exists.
+
+```rust
+pub fn research(state: &mut GameState, public_id: usize)
+```
+
+Runs `searchsploit`-style local research on a finding by its public id. Low noise. Accumulates positive and negative read counts; the consensus converges on the truth over multiple calls but no single call is deterministic (78% accuracy per read).
+
+### Exploitation
+
+```rust
+pub fn exploit(state: &mut GameState, public_id: usize)
+```
+
+Attempts to exploit a finding. On a real vulnerability the probability is:
+
+```
+p = base + confidence × w_conf + skill × w_skill − difficulty_norm × w_diff − defense_penalty
+```
+
+`Reliable` exploits are deterministic (always succeed). A false-positive finding backfires and adds extra noise (+25 trace). Failed exploits also add noise (+18 trace).
+
+```rust
+pub fn login(state: &mut GameState)
+```
+
+Deterministic foothold using a reusable credential token from a previous mission. Succeeds only if the current host sets `accepts_token` to a value the player already holds in `game.foothold_tokens`. Lower noise than `exploit`, but still leaves a trace.
+
+### Post-exploitation
+
+```rust
+pub fn privesc(state: &mut GameState)
+```
+
+Local privilege escalation. If `game.privesc_unlocked` is `true` (player collected a file with `loot.privesc_key = true`, or used a local enumeration tool that identified the vector), success is guaranteed. Otherwise a probability roll is used based on `skill` and `root_difficulty`. On a mission with no `objective`, a successful `privesc` immediately completes the mission.
+
+```rust
+pub fn netmap(state: &mut GameState)
+```
+
+From a compromised host in a multi-host mission, discovers reachable neighbor hosts and marks them as pivotable. Has no effect on single-host missions.
+
+```rust
+pub fn pivot(state: &mut GameState, host: Option<String>)
+```
+
+Switches the active target to a reachable host in the internal network. The previous host's runtime state (phase, intel, cwd, looted paths) is snapshotted and restored when you pivot back.
+
+```rust
+pub fn cleanup(state: &mut GameState)
+```
+
+Active trace reduction. Probability of success decreases with each successive cleanup in the same mission. A failed cleanup backfires and adds more trace.
+
+### VFS operations
+
+All VFS actions require a foothold (`Phase::Post`) first.
+
+```rust
+pub fn fs_ls(state: &mut GameState, path: Option<String>)
+pub fn fs_cd(state: &mut GameState, path: Option<String>)
+pub fn fs_pwd(state: &mut GameState)
+pub fn fs_find(state: &mut GameState, needle: Option<String>)
+pub fn fs_cat(state: &mut GameState, path: Option<String>)
+pub fn fs_exfil(state: &mut GameState, path: Option<String>)
+```
+
+`fs_cat` applies `Loot` the first time a file is read (skill bonus, credential, token, privesc key). `fs_exfil` checks that the path matches `game.objective` and calls `complete_level` on success.
+
+### Offline work
+
+```rust
+pub fn john(state: &mut GameState, path: Option<String>)
+pub fn strings(state: &mut GameState, path: Option<String>)
+pub fn disasm(state: &mut GameState, path: Option<String>)
+pub fn solve(state: &mut GameState, path: Option<String>, secret: Option<String>)
+pub fn decode_cmd(state: &mut GameState, tool: &str, path: Option<String>, key: Option<String>)
+```
+
+These spend clock time but produce no network noise. `john` cracks a hash previously read with `fs_cat`; the probability depends on skill and hash strength, and `has_wordlist` adds a significant bonus for hashes that require one. `strings`/`disasm`/`solve` implement the binary reversing challenge. `decode_cmd` handles `base64` and `xor` file decoding.
+
+### Local enumeration (POST)
+
+```rust
+pub fn local_enum(state: &mut GameState, tool: &str)
+```
+
+Runs a local enumeration tool (`"linpeas"`, `"sudo"`, `"suid"`, `"sysinfo"`) that can reveal the host's `local_privesc` vector. `linpeas` covers all vector types; the others are specific. On success sets `game.privesc_unlocked = true`, making `privesc` deterministic.
+
+### Declarative command dispatch
+
+```rust
+pub fn campaign_command(state: &mut GameState, verb: &str) -> bool
+```
+
+Looks up a `CampaignCommand` by trigger verb, evaluates all its `CommandCondition`s, and applies its `CommandEffect`s in order. Returns `true` if a matching available command was found and executed, `false` if the verb should fall through to easter-egg lookup. This is the integration point between the frontend's command parser and the engine's declarative command system.
+
+## ShellOutput
+
+`ShellOutput` is returned by `sysemu::run` — the synthesized POSIX shell command layer.
+
+```rust
+pub struct ShellOutput {
+    pub lines: Vec<String>,
+    pub exit: i32,
+}
+```
+
+`sysemu::run(state, verb, args)` handles `uname`, `hostname`, `id`, `whoami`, `ps`, `netstat`/`ss`, `ifconfig`, `ip`, `env`, `export`, `grep`, `head`, `tail`, `wc`, and `file`. All output is synthesized from the live `TargetNode` and VFS — no per-command authoring is needed in campaign data. Returns `None` if the verb is not a synthesized system command (the frontend should then try campaign commands and easter eggs).
+
+## Detection model
+
+Trace accumulates in `DetectionState` as a running `f32`. Every action that uses network resources calls `state.detection.add_noise(cost)` and then `state.check_detection()`. Passive-phase dwell (time spent in RECON/ENUM/EXPLOIT without a foothold) also adds a small trickle via `advance_clock`.
+
+When `detection >= detection_limit`, `check_detection` sets `outcome = Some(GameOutcome::Defeat)`.
+
+On missions with `reactive: true` the blue team escalates in stages as trace crosses percentage thresholds (35 %, 60 %, 80 % of the limit). Each stage adds a `defense_penalty` that reduces exploit and privesc success probabilities and may inject additional noise. Defense progression is cumulative and irreversible within a mission.
+
+## Asset sources
+
+Asset sources decouple file-system access from campaign metadata. The engine's `OpenCampaign` pairs a `Campaign` with an `AssetSource` so the frontend can read music or binary files without knowing whether the campaign came from a directory or an archive.
+
+```rust
+pub trait AssetSource: Send + Sync {
+    fn read(&self, path: &str) -> io::Result<Vec<u8>>;
+    fn contains(&self, path: &str) -> bool;
+}
+```
+
+| Implementation | Use case |
+|---------------|----------|
+| `DirAssetSource::new(root)` | Campaign loaded from a directory; resolves logical paths against `root` |
+| `MemAssetSource` | In-memory assets loaded from an archive or injected in tests; supports `insert(path, data)` |
+| `NoAssets` | Placeholder that rejects all reads; use when audio is not needed |
+
+## Building a minimal headless frontend
+
+The example below drives a campaign through the core RECON → ENUM → EXPLOIT loop without any terminal UI:
+
+```rust
+use simterm_engine::{load_campaign, GameState, actions};
+
+fn main() {
+    let campaign = load_campaign("./my_campaign").unwrap();
+    let mut game = GameState::new(campaign);
+
+    // Drive through the recon → enum → exploit loop
+    actions::recon(&mut game);
+
+    // Inspect discovered services
+    for port in &game.discovered_ports {
+        println!("found port {port}");
+    }
+
+    // Enumerate a discovered web service
+    actions::enumerate(&mut game, "nikto", Some(80));
+
+    // Research and attempt to exploit the first finding
+    if let Some(finding) = game.intel.first() {
+        let id = finding.public_id;
+        actions::research(&mut game, id);
+        actions::exploit(&mut game, id);
+    }
+
+    // Print all log lines
+    for line in &game.logs {
+        println!("{line}");
+    }
+}
+```
+
+<Tip>
+After each action, check `game.outcome` to detect a `Defeat` (trace overflow or time expiry) before continuing. `game.is_over()` is a convenience method that returns `true` when `outcome` is `Some`.
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="Data Model" icon="database" href="/engine/data-model">
+    Immutable types that GameState reads
+  </Card>
+  <Card title="Validation API" icon="check" href="/engine/validation-api">
+    Validate a campaign before constructing GameState
+  </Card>
+</CardGroup>

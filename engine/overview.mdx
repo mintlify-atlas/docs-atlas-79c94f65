@@ -1,0 +1,140 @@
+---
+title: "simterm-engine: Embed the Framework Runtime"
+sidebarTitle: "Overview"
+description: "Add simterm-engine as a Rust dependency to build custom frontends, headless tools, or test harnesses on top of the Simterm runtime."
+---
+
+`simterm-engine` is the reusable library at the heart of Simterm. It owns the immutable campaign data model, the mutable game-state runtime, the campaign loader, the semantic validator, and the asset-source abstraction — with no dependency on `ratatui`, `crossterm`, or any other UI library. Any Rust binary can pull it in and drive a full campaign loop without touching the terminal frontend.
+
+## When to use the library directly
+
+If you are authoring a campaign in RON files and playing it through the standard `simterm` CLI, you do not need to depend on `simterm-engine` directly — the frontend already does that for you.
+
+Use `simterm-engine` directly when you want to:
+
+- Build an alternative frontend (web, headless server, embedded TUI)
+- Write integration tests that drive a campaign programmatically
+- Build tooling such as a campaign linter or validator
+- Embed the game loop in a larger application
+
+## Adding the dependency
+
+```toml
+[dependencies]
+simterm-engine = { path = "../engine" }  # workspace
+
+# or from crates.io when published:
+# simterm-engine = "0.2"
+```
+
+## Minimal usage example
+
+The following snippet — drawn from the crate's own rustdoc — is the smallest possible headless session: load a campaign from disk, construct a `GameState`, and call the first action.
+
+```rust
+use simterm_engine::{load_campaign, GameState, actions};
+
+let campaign = load_campaign("examples/sample_campaign").expect("valid campaign");
+let mut game = GameState::new(campaign);
+actions::recon(&mut game);
+```
+
+From here you can inspect `game.intel`, call `actions::enumerate`, `actions::exploit`, and so on to drive the full recon → enum → exploit → post loop.
+
+## Public re-exports
+
+Everything the library exposes is re-exported from the crate root so you only need one `use simterm_engine::…` import. The exports are grouped below by layer.
+
+### Model types
+
+These are the **immutable** definition types loaded from a campaign's RON files. Once a `Campaign` is loaded they never change.
+
+| Type | Description |
+|------|-------------|
+| `Campaign` | Root value: missions, theme, easter eggs, achievements, declarative commands |
+| `CampaignAchievement` | A data-driven achievement with an id, title, and trigger |
+| `CampaignAchievementTrigger` | Enum of unlock conditions (`ReadFile`, `CompleteMission`, `ChooseEnding`, `CampaignComplete`) |
+| `Mission` | Single level definition: target, entry vector, detection limit, endings |
+| `EntryVector` | How a mission starts (`Active`, `Cold`, `Passive`, `Pivot`) |
+| `Ending` | A branching ending option displayed at mission close |
+| `NetHost` | A host inside a multi-host internal network |
+| `TargetNode` | A compromisable host: services, vulnerabilities, VFS, token gating |
+| `Service` | A port/name/version entry on a target |
+| `Vulnerability` | A hidden exploitable flaw attached to a service port |
+| `FsNode` | A node in the virtual filesystem (`Dir` or `File`) |
+| `Loot` | Mechanical reward tied to reading a file (skill bonus, credential, token) |
+| `Theme` | Branding and cosmetic text overrides for the campaign |
+| `EasterEgg` | A flavor-only hidden command defined in campaign data |
+| `Language` | Narrative language selection (`Es` or `En`) |
+| `EnumTool` | Static definition of an enumeration tool (name, affinities, noise, hit rates) |
+| `ServiceCat` | Service category inferred from a service name (`Web`, `Smb`, `Ssh`, `Db`, `Other`) |
+| `IntelFinding` | A discovered finding in the intel list |
+| `FindingSource` | How a finding was produced (`PortScan`, `DeepScan`) |
+| `FindingStatus` | Current state of a finding (`Unverified`, `VerifiedTrue`, `VerifiedFalse`, `Failed`, `Exploited`) |
+
+### Command types
+
+Declarative commands are defined entirely in campaign data and dispatched by the runtime without any Rust code in the campaign.
+
+| Type | Description |
+|------|-------------|
+| `CampaignCommand` | A data-driven command with triggers, output lines, effects, and conditions |
+| `CommandEffect` | What a command does: `AddLog`, `SetFlag`, `ClearFlag`, `AddTrace`, `UnlockAchievement`, `CompleteMission` |
+| `CommandCondition` | When a command is available: `FlagSet`, `FlagNotSet`, `Mission`, `Phase` |
+| `TerminalCommand` | An authored realistic shell command (presentational, no game-state effect) |
+
+### Runtime
+
+| Symbol | Description |
+|--------|-------------|
+| `actions` | Module of all player action functions (recon, enumerate, exploit, …) |
+| `GameState` | The full mutable session state created with `GameState::new(campaign)` |
+| `Phase` | Kill-chain phase enum: `Recon`, `Enum`, `Exploit`, `Post` |
+| `GameOutcome` | Terminal game result: `Victory` or `Defeat` |
+| `AchievementId` | Built-in engine achievement enum |
+| `ACHIEVEMENTS` | Static slice of all built-in `AchievementId` values |
+| `ShellOutput` | Return value from `sysemu::run`: output lines plus an exit code |
+
+### Loader
+
+| Symbol | Description |
+|--------|-------------|
+| `load_campaign` | Load a `Campaign` from a directory or `.ron` file path |
+| `load_open_campaign` | Load a `Campaign` together with its `AssetSource` |
+| `LoadError` | Error variants: `NotFound`, `Parse`, `Empty` |
+| `OpenCampaign` | Struct pairing a `Campaign` with a `Box<dyn AssetSource>` |
+
+### Validation
+
+| Symbol | Description |
+|--------|-------------|
+| `validate_campaign` | Pure semantic validation returning a `ValidationReport` |
+| `ValidationIssue` | A single issue with a location string and a message |
+| `ValidationReport` | Container for `errors` and `warnings` vectors |
+
+### Assets
+
+| Type | Description |
+|------|-------------|
+| `AssetSource` | Trait: `read(path) -> io::Result<Vec<u8>>` |
+| `DirAssetSource` | Reads assets from a real directory on disk |
+| `MemAssetSource` | Holds assets in a `HashMap<String, Vec<u8>>` (useful in tests) |
+| `NoAssets` | Rejects all reads; use when audio and binary assets are not needed |
+
+## Engine / frontend boundary
+
+`simterm-engine` never imports `ratatui`, `crossterm`, or any audio library. All presentation decisions — terminal rendering, input handling, help text, audio playback — belong to the frontend. The engine owns every state transition: phase advances, trace accumulation, detection checks, loot application, achievement unlocking, and mission completion.
+
+When building a custom frontend you pass the verb string to `actions::campaign_command` and call individual `actions::*` functions. The engine mutates `GameState` and appends to `game.logs`; your frontend reads those logs and renders them however it chooses.
+
+<CardGroup cols={3}>
+  <Card title="Data Model" icon="database" href="/engine/data-model">
+    All campaign types and their fields
+  </Card>
+  <Card title="Runtime" icon="play" href="/engine/runtime">
+    GameState, Phase, and every action function
+  </Card>
+  <Card title="Validation API" icon="check" href="/engine/validation-api">
+    validate_campaign and the ValidationReport
+  </Card>
+</CardGroup>

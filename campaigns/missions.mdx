@@ -1,0 +1,292 @@
+---
+title: "Defining Missions and Entry Vectors in Simterm"
+sidebarTitle: "Missions"
+description: "Reference for the Mission struct, EntryVector variants, branching endings, multi-host network missions, and per-mission music in Simterm."
+---
+
+Missions are the fundamental unit of progression in a Simterm campaign. Each entry in the `missions` list represents one self-contained operation: it defines the target host (or network), the kill-chain parameters, the narrative text, and — optionally — branching endings that let the player choose how the operation closes. Missions are played in the order they appear in the list.
+
+## Mission struct fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `id` | string | **required** | Internal identifier. Must be unique and non-empty. |
+| `name` | string | **required** | Visible mission name shown in the UI. |
+| `briefing` | string list | `[]` | Lines shown at mission start. |
+| `detection_limit` | float | `100.0` | Trace threshold that triggers defeat. |
+| `time_limit` | `Some(u32)` or `None` | `None` | Mission time window in action ticks. `None` means no limit. |
+| `reactive` | bool | `false` | Enables active defense escalation when `true`. |
+| `skill` | float | `0.5` | Operator skill modifier, normally `0.0..=1.0`. |
+| `root_difficulty` | integer | `5` | Local privilege escalation difficulty, `1..=10`. |
+| `objective` | `Some("/path")` or `None` | `None` | VFS path to exfiltrate. If `None`, root access completes the mission. |
+| `debrief` | string list | `[]` | Lines shown after mission completion. |
+| `entry` | `EntryVector` | `Active` | Opening mission state. See below. |
+| `endings` | `Ending` list | `[]` | Branching ending choices. Player selects with `choose <n>`. |
+| `target` | `TargetNode` | empty | Single-host target. Ignored when `network` is present. |
+| `network` | `NetHost` list | `[]` | Multi-host network. When non-empty, `target` is ignored. |
+| `music` | `Some("path/to/file.wav")` or `None` | `None` | WAV path relative to the campaign directory for this mission's track. |
+
+## EntryVector
+
+The `entry` field controls how a mission opens — specifically, what state the player starts in and how noisy initial reconnaissance is.
+
+### `Active`
+
+Classic active scan flow. The player begins at the recon phase and should start with `nmap`.
+
+```ron
+entry: Active,
+```
+
+### `Cold`
+
+Selected ports are already known; the mission starts in the enumeration phase with those ports pre-discovered. No `nmap` required.
+
+```ron
+entry: Cold(ports: [443]),
+```
+
+Pass an empty list to pre-discover all ports:
+
+```ron
+entry: Cold(ports: []),
+```
+
+### `Passive`
+
+Passive discovery via `sniff`. Very stealthy, but services are revealed one at a time. Running `nmap` in passive mode adds extra trace.
+
+```ron
+entry: Passive,
+```
+
+### `Pivot`
+
+The objective host is behind a bastion. The player must `connect` to the gateway before scanning.
+
+```ron
+entry: Pivot(gateway: "bastion"),
+```
+
+## Branching endings
+
+When a mission defines `endings`, the player selects one with `choose <n>` instead of the mission closing automatically. Each `Ending` has a `title` (shown in the selection list) and optional `lines` (epilogue text).
+
+```ron
+endings: [
+    (
+        title: "Submit the report to your handler",
+        lines: [
+            "Your handler receives the data.",
+            "Case closed — textbook operation.",
+        ],
+    ),
+    (
+        title: "Keep the data for yourself",
+        lines: [
+            "You pocket the drives.",
+            "Some leaks write their own history.",
+        ],
+    ),
+],
+```
+
+<Accordion title="Linking achievements to ending choices">
+  Use `ChooseEnding` in `CampaignAchievement.trigger` to unlock an achievement when the player picks a specific ending. The `choice` index is 1-based and must be within range — `--doctor` reports an error if it is not.
+
+  ```ron
+  (
+      id: "burn-it-down",
+      title: "Burn it down",
+      description: "Choose the leak ending.",
+      trigger: ChooseEnding(mission: "final-op", choice: 2),
+  ),
+  ```
+</Accordion>
+
+## Multi-host network missions
+
+Set `network` instead of `target` when a mission spans more than one host. When `network` is non-empty the `target` field is ignored entirely.
+
+### `NetHost` struct
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `target` | `TargetNode` | **required** | The host definition (services, vulnerabilities, filesystem). |
+| `links` | string list | `[]` | Short hostnames (or FQDNs) of other hosts reachable from this one via `pivot`. |
+| `entry` | bool | `false` | `true` marks this host as the player's initial entry point. |
+| `objective` | `Some("/path")` or `None` | `None` | VFS path to exfiltrate on this host to complete the mission. |
+
+Mark at least one host `entry: true`. Connect hosts directionally with `links` — the short hostname is the first segment of the FQDN (e.g. `"db-03"` for `"db-03.range.local"`). Place the `objective` on the host that should close the mission when exfiltrated.
+
+### Multi-host mission example
+
+```ron
+Mission(
+    id: "ej2-red-interna",
+    name: "RED INTERNA",
+    briefing: [
+        "Two machines. The interesting one is inside.",
+        "Compromise the gateway, map the network, and pivot.",
+    ],
+    detection_limit: 120.0,
+    skill: 0.6,
+    root_difficulty: 5,
+    entry: Active,
+    network: [
+        (
+            entry: true,
+            links: ["db-03"],
+            target: (
+                hostname: "gw-02.range.local",
+                ip: "192.0.2.20",
+                os: "Linux 5.x",
+                services: [
+                    (port: 80, name: "http", version: "nginx 1.20"),
+                ],
+                vulnerabilities: [
+                    (
+                        id: "GW-RCE",
+                        name: "Remote code execution on web panel",
+                        affected_service: 80,
+                        difficulty: 4,
+                        stealth_cost: 6,
+                    ),
+                ],
+                filesystem: [
+                    Dir(name: "etc", children: [
+                        Dir(name: "app", children: [
+                            File(
+                                name: "cred.env",
+                                content: ["DB_TOKEN=range-key"],
+                                loot: Some((
+                                    credential: Some("DB_TOKEN=range-key"),
+                                    foothold_token: Some("range-key"),
+                                    note: Some("Reuse with login on the database host."),
+                                )),
+                            ),
+                        ]),
+                    ]),
+                ],
+            ),
+        ),
+        (
+            entry: false,
+            objective: Some("/root/loot.dat"),
+            target: (
+                hostname: "db-03.range.local",
+                ip: "10.10.0.3",
+                os: "Linux 5.x",
+                services: [
+                    (port: 5432, name: "pgsql", version: "PostgreSQL 14"),
+                ],
+                vulnerabilities: [
+                    (
+                        id: "PG-RCE",
+                        name: "RCE via COPY in PostgreSQL",
+                        affected_service: 5432,
+                        difficulty: 6,
+                        stealth_cost: 9,
+                    ),
+                ],
+                accepts_token: Some("range-key"),
+                filesystem: [
+                    Dir(name: "root", children: [
+                        File(
+                            name: "loot.dat",
+                            content: ["FLAG{mission_two}"],
+                            root: true,
+                        ),
+                    ]),
+                ],
+            ),
+        ),
+    ],
+)
+```
+
+The player workflow in this mission is: compromise `gw-02` → pick up `foothold_token: "range-key"` from `cred.env` → run `netmap` → run `pivot db-03` → run `login` (deterministic foothold because `accepts_token` matches) → escalate → exfiltrate `/root/loot.dat`.
+
+## Minimal single-host mission
+
+The following is adapted from the sample campaign. It demonstrates the complete single-host shape with an explicit objective and an `Active` entry.
+
+```ron
+Mission(
+    id: "ej1-primer-contacto",
+    name: "PRIMER CONTACTO",
+    briefing: [
+        "A simple machine with one web service.",
+        "Goal: get access and exfiltrate /root/flag.txt.",
+    ],
+    detection_limit: 130.0,
+    time_limit: Some(320),
+    skill: 0.55,
+    root_difficulty: 4,
+    objective: Some("/root/flag.txt"),
+    debrief: ["Flag captured. Exercise 1 complete."],
+    entry: Active,
+    target: (
+        hostname: "training-01.range.local",
+        ip: "192.0.2.10",
+        os: "Linux 5.x",
+        services: [
+            (port: 80, name: "http", version: "nginx 1.20"),
+            (port: 22, name: "ssh",  version: "OpenSSH 8.4"),
+        ],
+        vulnerabilities: [
+            (id: "LFI",    name: "Local file inclusion",        affected_service: 80, difficulty: 4, stealth_cost: 5),
+            (id: "UPLOAD", name: "Unfiltered file upload",      affected_service: 80, difficulty: 5, stealth_cost: 7),
+            (id: "SSH",    name: "Weak SSH password",           affected_service: 22, difficulty: 6, stealth_cost: 10),
+        ],
+        filesystem: [
+            Dir(name: "home", children: [
+                Dir(name: "op", children: [
+                    File(
+                        name: "id_rsa",
+                        content: ["-----BEGIN OPENSSH PRIVATE KEY-----"],
+                        loot: Some((privesc_key: true, note: Some("Local key — enables safe privesc."))),
+                    ),
+                ]),
+            ]),
+            Dir(name: "root", children: [
+                File(
+                    name: "flag.txt",
+                    content: ["FLAG{mission_one_complete}"],
+                    root: true,
+                ),
+            ]),
+        ],
+    ),
+)
+```
+
+## Per-mission music
+
+Attach a soundtrack to a mission in two ways, checked in this order:
+
+1. **Explicit `music` field** — set it to a WAV path relative to the campaign directory:
+
+   ```ron
+   Mission(
+       id: "op1",
+       music: Some("music/intro_theme.wav"),
+       // ...
+   )
+   ```
+
+2. **Naming convention** — if `music` is omitted, the frontend looks for `music/mission_N_theme.wav` next to `campaign.ron`, where `N` is the 1-based mission number:
+
+   ```
+   my_campaign/
+     campaign.ron
+     music/
+       mission_1_theme.wav
+       mission_2_theme.wav
+   ```
+
+Tracks loop with a short fade-in and switch automatically when the mission changes. Missions with neither an explicit file nor a convention file are silent. Use `--no-music` to disable audio entirely. Only WAV is supported. Music is a frontend feature — the engine only carries the path as data and never touches audio.
+
+<Tip>
+  Run `--doctor` after editing missions. It catches the most common issues — duplicate IDs, objectives pointing to non-existent VFS paths, and network `links` referencing undefined hostnames — before you spend time playtesting a broken campaign.
+</Tip>

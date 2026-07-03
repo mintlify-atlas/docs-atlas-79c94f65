@@ -1,0 +1,107 @@
+---
+title: "Validating Campaigns with --check and --doctor"
+sidebarTitle: "Validation"
+description: "Reference for Simterm's two validation modes, the full list of --doctor errors and warnings, troubleshooting common issues, and the validate_campaign API."
+---
+
+Simterm ships two validation modes for campaign authors. Running them regularly — especially after structural changes — catches broken references and out-of-range values before you discover them mid-playtest.
+
+## Two validation modes
+
+| Mode | What it checks | Exits non-zero on |
+|---|---|---|
+| `--check` | Parses the RON file and confirms at least one mission is present. | Parse errors, missing `missions`. |
+| `--doctor` | Full semantic analysis: dangling references, duplicate IDs, unreachable content, out-of-range values, and trigger collisions. | Any **error**-level finding. |
+
+```bash
+# Basic load check — does it parse and have missions?
+cargo run -p simterm -- --check --campaign ./my_campaign
+
+# Deeper semantic check — dangling refs, bad ranges, collisions
+cargo run -p simterm -- --doctor --campaign ./my_campaign
+```
+
+`--doctor` prints **errors** and **warnings** to stdout. Errors are things that break the campaign; warnings are things that smell wrong but still load. Fix all errors before distributing a campaign.
+
+<Warning>
+  `--doctor` exits with a non-zero status code when there are any errors. This makes it safe to use in CI pipelines — a failing campaign blocks the build.
+</Warning>
+
+## `--doctor` errors
+
+These conditions break the campaign and must be resolved:
+
+| Error | Cause |
+|---|---|
+| Duplicate mission ID | Two or more `Mission` entries share the same `id`. |
+| Empty mission ID | A `Mission.id` is an empty or whitespace-only string. |
+| Campaign with no missions | The `missions` list is empty. |
+| Objective not in VFS | `Mission.objective` (or `NetHost.objective`) points to a path with no matching file in that host's filesystem. |
+| `affected_service` port not in services | A `Vulnerability.affected_service` port does not appear in the same host's `services` list. |
+| `Service.requires` token never obtainable | A service gated with `requires: Some("token")` but that token is not granted by any `Loot.foothold_token`, `Loot.hash.yields`, or `Binary.yields` anywhere in the campaign. |
+| Duplicate network hostname | Two `NetHost` entries in the same `network` list share the same `hostname`. |
+| Invalid `links` reference | A `NetHost.links` entry names a hostname that does not exist in the mission's `network`. |
+| Duplicate achievement ID | Two `CampaignAchievement` entries share the same `id`. |
+| Achievement trigger: missing mission | A `CompleteMission` or `ChooseEnding` trigger references a `Mission.id` that does not exist. |
+| Achievement trigger: choice out of range | A `ChooseEnding` trigger has a `choice` value less than 1 or greater than the number of `endings` in the referenced mission. |
+| Command effect: missing achievement | A `CommandEffect::UnlockAchievement("id")` references an achievement `id` that is not defined in the campaign. |
+| Command condition: missing mission | A `CommandCondition::Mission("id")` references a `Mission.id` that does not exist. |
+| Command condition: invalid phase | A `CommandCondition::Phase("name")` uses a phase name other than `recon`, `enum`, `exploit`, or `post`. |
+
+## `--doctor` warnings
+
+These conditions are suspicious but do not break the campaign. They still load and run, but they often indicate design mistakes:
+
+| Warning | Cause |
+|---|---|
+| `skill` out of range | A mission's `skill` value is outside `0.0..=1.0`. The engine clamps it, but it likely isn't what you intended. |
+| `root_difficulty` out of range | A mission's `root_difficulty` is outside `1..=10`. |
+| `detection_limit` ≤ 0 | A `detection_limit` is zero or negative — the mission would be unwinnable. |
+| `time_limit` is `Some(0)` | A time limit of zero ticks causes instant defeat. |
+| Vulnerability `difficulty` out of range | A `Vulnerability.difficulty` is outside `1..=10`. |
+| `accepts_token` never obtainable | A host's `accepts_token` value is not produced by any loot anywhere in the campaign. `login` will never work on that host. |
+| Easter egg trigger collides with built-in | An `EasterEgg.triggers` entry matches a built-in verb. The easter egg will be shadowed and never fire. |
+| Campaign command trigger collides with built-in | A `CampaignCommand.triggers` entry matches a built-in verb. |
+| Terminal command trigger collides with built-in | A `TerminalCommand.triggers` entry matches a built-in or system command. |
+| Campaign command trigger collides with easter egg | A `CampaignCommand.triggers` entry also appears in an easter egg — the command takes priority, which may not be intended. |
+| Duplicate trigger across commands | The same trigger string appears in more than one `CampaignCommand` or more than one `TerminalCommand`. |
+| Achievement `ReadFile` path not in any VFS | A `ReadFile` trigger path doesn't match any file in any host's filesystem — the achievement can never unlock. |
+| `FlagSet` condition for unset flag | A `CommandCondition::FlagSet("flag")` references a flag that no command ever activates with `SetFlag`. The command can never become available. |
+| `TerminalCommand.exit` out of range | An exit code is outside `0..=255`. |
+| `{env:NAME}` references undefined variable | A `TerminalCommand` output template references an `env` variable that is neither in `campaign.env` nor automatically derived (`USER`, `LOGNAME`, `HOME`, `PWD`, `SHELL`, `HOSTNAME`). |
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| RON parse error at startup | Missing comma, mismatched parenthesis, or malformed `Some(...)`. Check the line number in the error message. |
+| `--check` fails with "no missions" | The `missions` field is missing or the list is empty. |
+| Mission never completes | The `objective` path doesn't exist in the VFS, or no deterministic root route exists (no `privesc_key` loot and no `local_privesc`). |
+| `login` always fails on a host | The `accepts_token` value on that host is never produced by any `foothold_token`, hash `yields`, or binary `yields` in the campaign. |
+| Command or easter egg never fires | The trigger collides with a built-in verb, or a `conditions` guard references a flag that is never set. |
+| Achievement never unlocks | The `ReadFile` path doesn't match any VFS file, the `CompleteMission` mission ID doesn't exist, or the `ChooseEnding` choice index is out of range. |
+| Player stuck — can't escalate | The `privesc_key` file has `root: true`, or there is no `local_privesc` defined and no `privesc_key` loot at all. |
+| Network pivot never works | A `NetHost.links` entry doesn't match any other host's short name or FQDN in the same mission network. |
+
+## The `validate_campaign` API
+
+`--doctor`'s logic is exposed as a public Rust function in `simterm_engine`:
+
+```rust
+use simterm_engine::validate_campaign;
+
+let report = validate_campaign(&campaign, &reserved_verbs);
+
+if report.has_errors() {
+    for issue in &report.errors {
+        eprintln!("[ERROR] {}: {}", issue.location, issue.message);
+    }
+}
+for issue in &report.warnings {
+    eprintln!("[WARN]  {}: {}", issue.location, issue.message);
+}
+```
+
+The second argument, `reserved_verbs`, is a slice of built-in verb strings from your frontend. Passing them lets the engine detect trigger collisions without the engine needing to know the specific command set. Pass `&[]` to skip collision checking.
+
+This API lets custom frontends, campaign editors, and CI tools reuse the same validation logic as the `--doctor` flag without spawning a subprocess.

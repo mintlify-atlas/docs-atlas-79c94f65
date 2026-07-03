@@ -1,0 +1,105 @@
+{
+  "projectType": "framework",
+  "projectName": "Simterm",
+  "projectDescription": "A Rust framework for building data-driven, immersive terminal-based games and interactive command-line campaigns without writing any engine code.",
+  "theme": "aspen",
+  "primaryColor": "#fc5c04",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Building Campaigns",
+            "pages": [
+              "campaigns/overview",
+              "campaigns/missions",
+              "campaigns/targets",
+              "campaigns/filesystem",
+              "campaigns/commands",
+              "campaigns/theming",
+              "campaigns/validation"
+            ]
+          },
+          {
+            "group": "Command Reference",
+            "pages": [
+              "commands/overview",
+              "commands/recon",
+              "commands/enumeration",
+              "commands/exploitation",
+              "commands/post-exploitation",
+              "commands/system-shell"
+            ]
+          },
+          {
+            "group": "Engine API",
+            "pages": [
+              "engine/overview",
+              "engine/data-model",
+              "engine/runtime",
+              "engine/validation-api"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Data-driven campaign system: missions, targets, vulnerabilities, and narrative live in RON files — no Rust required",
+    "Reusable simterm-engine library crate with no UI dependency",
+    "Terminal UI powered by ratatui and crossterm",
+    "Virtual filesystem for post-exploitation exploration, clues, and objectives",
+    "Declarative campaign commands with conditional effects (flags, trace, achievements, mission completion)",
+    "Multi-host network missions with pivoting and token-based lateral movement",
+    "Synthesized POSIX shell (uname, ps, netstat, env, grep, etc.) from host definitions",
+    "Imperfect information model: tool affinity, reliability tiers (Reliable / Unstable), false positives",
+    "Offline analysis and reversing puzzles: hash cracking, binary strings/disasm, Base64/XOR encoding",
+    "Optional per-mission WAV music with fade-in and looping",
+    "Semantic validation via --doctor: dangling refs, unreachable content, bad ranges",
+    "Autoplay modes (--autoplay and --autoplay-deterministic) for end-to-end playability testing",
+    "Achievement system: engine-level and campaign-defined data-driven achievements"
+  ],
+  "publicApiSurface": [
+    "simterm_engine::load_campaign(path) -> Result<Campaign, LoadError>",
+    "simterm_engine::load_open_campaign(path) -> Result<OpenCampaign, LoadError>",
+    "simterm_engine::GameState::new(campaign: Campaign) -> GameState",
+    "simterm_engine::actions::recon(state: &mut GameState)",
+    "simterm_engine::actions::enumerate(state, tool, port)",
+    "simterm_engine::actions::exploit(state, finding_id)",
+    "simterm_engine::actions::privesc(state)",
+    "simterm_engine::actions::campaign_command(state, verb)",
+    "simterm_engine::validate_campaign(campaign: &Campaign, reserved_verbs: &[&str]) -> ValidationReport",
+    "simterm_engine::model::campaign::Campaign",
+    "simterm_engine::model::mission::Mission",
+    "simterm_engine::model::target::TargetNode",
+    "simterm_engine::model::filesystem::FsNode",
+    "simterm_engine::model::command::CampaignCommand",
+    "simterm_engine::model::command::CommandEffect",
+    "simterm_engine::model::command::CommandCondition",
+    "simterm_engine::model::terminal::TerminalCommand",
+    "simterm_engine::model::theme::Theme",
+    "simterm_engine::runtime::state::GameState",
+    "simterm_engine::runtime::state::Phase",
+    "simterm_engine::runtime::state::GameOutcome",
+    "simterm_engine::runtime::sysemu::ShellOutput",
+    "simterm_engine::asset::{AssetSource, DirAssetSource, MemAssetSource, NoAssets}",
+    "CLI: cargo run -p simterm -- --campaign <path>",
+    "CLI: cargo run -p simterm -- --check --campaign <path>",
+    "CLI: cargo run -p simterm -- --doctor --campaign <path>",
+    "CLI: cargo run -p simterm -- --autoplay --campaign <path>",
+    "CLI: cargo run -p simterm -- --autoplay-deterministic --campaign <path>",
+    "CLI: cargo run -p simterm -- --no-music --campaign <path>",
+    "CLI: cargo run -p simterm -- --autoplay-delay <ms>"
+  ]
+}

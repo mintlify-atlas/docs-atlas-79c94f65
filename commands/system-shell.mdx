@@ -1,0 +1,127 @@
+---
+title: "Emulated POSIX Shell Commands in Simterm"
+sidebarTitle: "System Shell"
+description: "How Simterm synthesizes a realistic POSIX shell from TargetNode data, environment variable expansion rules, and the built-in mini-experience commands."
+---
+
+Simterm emulates a realistic POSIX shell that feels like a real compromised box — but no campaign author has to write a single line of per-command output to make it work. The system shell is synthesized automatically from the `TargetNode` definition the author already wrote: hostname, IP address, OS version, services, and the `env` / `processes` campaign fields. The result is a consistent, accurate shell that responds correctly to standard POSIX verbs regardless of which campaign is loaded.
+
+## How Synthesis Works
+
+Every system command derives its output from existing state rather than authored strings:
+
+- `uname` reads `TargetNode.os` and the hostname.
+- `ps` maps each service name to a plausible process name, appends the `campaign.processes` list, and adds a base set of system processes (`init`, `sshd`, your shell).
+- `netstat` / `ss` reads `TargetNode.services` for its listening port table.
+- `ifconfig` / `ip a` reads `TargetNode.ip` for the interface address.
+- `env` merges derived variables with `campaign.env` and any session overrides set via `export`.
+- `whoami` / `id` reflects whether you have a foothold and whether you are root.
+
+The system commands that describe the host (`uname`, `ps`, `netstat`, `ifconfig`, `env`, `export`) require an active shell — they return `bash: <verb>: command not found` (exit 127) if called without a foothold.
+
+## Synthesized System Commands
+
+| Command | Synthesized from |
+|---|---|
+| `whoami` / `id` | Root vs user session; produces `uid=0(root)` or `uid=1000(user)` |
+| `uname [-a]` | `os` + hostname; `-a` produces the full Linux kernel string |
+| `hostname [-f]` | Host name (short without `-f`; FQDN with `-f`) |
+| `ps [aux]` | `services` (name→process) + base procs (`init`, `sshd`) + `processes` |
+| `netstat -tlnp` / `ss` | `services` (listening ports) |
+| `ifconfig` / `ip a` | Host `ip` + loopback |
+| `env` | `env` map + derived (`USER`, `HOME`, `PWD`, `HOSTNAME`, `SHELL`, `LOGNAME`) |
+| `export VAR=val` | Sets a session variable (reset on mission change) |
+| `grep PAT FILE` | The VFS — filters lines by pattern |
+| `head [-n N] FILE` | The VFS — first N lines (default 10) |
+| `tail [-n N] FILE` | The VFS — last N lines (default 10) |
+| `wc FILE` | The VFS — line, word, and byte count |
+| `file FILE` | The VFS — reports ASCII text or ELF 64-bit binary |
+
+---
+
+## Environment Variable Expansion
+
+The engine supports three expansion forms, consistent with standard bash behavior:
+
+- `$VAR` — expands the named variable.
+- `${VAR}` — same, with explicit delimiters (useful adjacent to other text).
+- `$?` — expands to the exit code of the last command.
+
+Variables expand inside `echo` arguments and inside campaign `TerminalCommand` output templates. An unknown variable expands to an empty string — the engine never errors on an undefined variable.
+
+### Environment layering
+
+The final `env` table merges three sources in priority order (lowest to highest):
+
+1. **Derived variables** — computed from game state: `USER`, `LOGNAME`, `HOME`, `PWD`, `HOSTNAME`, `SHELL`.
+2. **Campaign `env` map** — static key/value pairs defined in the campaign file. These can override derived variables (for example, setting a custom `PATH` or `SHELL`).
+3. **Session overrides** — variables set with `export VAR=val` during the current mission. These reset when the mission changes.
+
+```bash
+export API_KEY=abc123
+echo $API_KEY
+echo ${HOME}
+echo exit=$?
+```
+
+---
+
+## How `processes` and `env` Extend the Shell
+
+Campaign authors can make the shell feel even more authentic by supplying extra data:
+
+- **`campaign.processes`** — a list of raw process strings appended verbatim to the `ps` output. Use this to add application-layer processes (a web app, a cron daemon, a custom service) that do not correspond to a port-mapped service.
+- **`campaign.env`** — a key/value map merged into the environment. Useful for setting `PATH`, `LANG`, application secrets, or anything else a realistic shell on that host would export.
+
+Neither field requires per-command authoring. They feed the synthesized output automatically.
+
+---
+
+## Unknown Verb Behavior
+
+Any verb that is not a built-in command, not in the campaign's `commands`, `terminal`, or `easter_eggs`, resolves to the POSIX fallback:
+
+```text
+bash: <verb>: command not found
+```
+
+This exit code is 127, consistent with real bash. The `$?` variable will reflect this after the call.
+
+---
+
+## Shell Tone
+
+All system command output is authentic POSIX English, regardless of the campaign's configured `language`. An operator running a Spanish-language campaign still sees:
+
+```text
+uid=0(root) gid=0(root) groups=0(root)
+cat: /etc/shadow: Permission denied
+bash: foobar: command not found
+```
+
+Narrative text — briefings, debriefs, mission log entries, loot descriptions — follows the campaign language. The shell is the box; the story is the campaign.
+
+<Note>
+Shell output is always POSIX English. If your campaign targets a non-English-speaking audience, do not rely on system command output to carry narrative meaning — use the mission briefing, debrief, loot notes, and declarative command lines for localized storytelling instead.
+</Note>
+
+---
+
+## Mini-Experience Commands
+
+These built-in commands provide terminal flavor and lightweight minigames. Their content can be customized by the campaign through the `fortunes` and `signals` fields in the campaign definition.
+
+| Command | Aliases | Purpose |
+|---|---|---|
+| `fortune` | | Print a random campaign fortune from the `fortunes` list |
+| `signal` | | Intercept a coded signal built from `signals` campaign words |
+| `decode <text>` | `decrypt <text>` | Decode the latest signal-style intercepted text |
+| `crack <0000-9999>` | | Try a four-digit numeric keypad code |
+| `mastermind [guess]` | `bulls [guess]`, `mm [guess]` | Play the mastermind-style code-breaking minigame |
+
+These commands do not change core game state (no phase advancement, no trace, no flag effects). They spend no clock ticks. They are purely for atmosphere and optional engagement.
+
+- `fortune` — prints one randomly selected entry from `campaign.fortunes`. If the campaign defines no fortunes, a default set is used.
+- `signal` — generates a coded intercept using words from `campaign.signals` and a light cipher. Call `decode` with the output to reverse it.
+- `mastermind` with no argument starts a new game; with a four-digit guess it scores the attempt (correct digit in correct position = "bull"; correct digit in wrong position = "cow").
+- `crack` takes a four-digit code and checks it against the campaign-defined keypad answer, if one exists.

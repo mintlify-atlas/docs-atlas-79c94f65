@@ -1,0 +1,170 @@
+---
+title: "Defining Target Hosts, Services, and Vulnerabilities"
+sidebarTitle: "Targets"
+description: "How to define TargetNode, services, vulnerabilities, token gating, reliability, and local privilege escalation vectors in Simterm campaigns."
+---
+
+Every mission operates against one or more **target hosts**. A host definition collects everything the engine needs to simulate the kill chain: what services are exposed, what vulnerabilities exist behind them, what the filesystem looks like once the player has a foothold, and what escalation routes lead to root. All of this is declared as data in `TargetNode` — no Rust required.
+
+## TargetNode struct fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `hostname` | string | **required** | Fully-qualified hostname (e.g. `web-01.lab.local`). |
+| `ip` | string | **required** | IP address shown during recon. |
+| `os` | string | **required** | OS string shown by `uname` and `sysinfo`. |
+| `services` | `Service` list | **required** | Exposed services discovered during scanning. |
+| `vulnerabilities` | `Vulnerability` list | **required** | Hidden vulnerabilities. Players never read these directly. |
+| `filesystem` | `FsNode` list | `[]` | Virtual filesystem, accessible in the post-exploitation phase. |
+| `accepts_token` | `Some("token")` or `None` | `None` | Foothold token accepted by `login` for a deterministic entry. |
+| `local_privesc` | `Some(LocalPrivesc)` or `None` | `None` | Local escalation vector discoverable by enumeration commands. |
+
+## Service
+
+Services are the enumeration targets discovered after initial scanning. Their `name` determines which enumeration tools and categories apply.
+
+| Field | Type | Description |
+|---|---|---|
+| `port` | u16 | Port number. |
+| `name` | string | Service name. Controls enumeration category (see table below). |
+| `version` | string | Version string shown during enumeration. |
+| `requires` | `Some("token")` or `None` | If set, the service can be discovered but **cannot be enumerated** until the player holds that foothold token. |
+
+### Service name → enumeration category
+
+| Service names | Enumeration category |
+|---|---|
+| `http`, `https`, `http-proxy`, `http-alt` | Web |
+| `smb`, `netbios`, `netbios-ssn`, `microsoft-ds` | SMB |
+| `ssh` | SSH / login |
+| `mysql`, `pgsql`, `postgresql`, `redis`, `mongodb`, `mssql`, `oracle` | Database |
+| everything else | Generic |
+
+Tool affinity follows these categories: web services respond to `nikto`, `gobuster`, and `sqlmap`; SMB to `enum4linux`; SSH/login to `hydra` (intentionally noisy); databases to `sqlmap`; unknown services to `probe`.
+
+## Vulnerability
+
+Vulnerabilities are the actual attack surface. They are always hidden from the player — the player reasons about them through enumeration results and tool output, then attempts to exploit what they have found.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `id` | string | **required** | Internal identifier (not shown directly to the player). |
+| `name` | string | **required** | Human-readable name (shown in enumeration output). |
+| `affected_service` | u16 | **required** | Port of the service this vulnerability belongs to. Must exist in `services`. |
+| `difficulty` | u8 | **required** | Exploitation difficulty, `1..=10`. |
+| `stealth_cost` | u8 | **required** | Trace added to the detection meter when exploiting. |
+| `reliability` | `Reliable` or `Unstable` | `Unstable` | Whether exploitation is deterministic once identified. |
+
+### Reliability
+
+| Value | When to use |
+|---|---|
+| `Reliable` | Deterministic once identified. Use for credentials, no-auth bugs, LFI, SQL injection, and simple bypasses. |
+| `Unstable` | Probabilistic. Use for fragile RCE, deserialization, memory corruption, SSRF, races, and timing-dependent vectors. |
+
+When `reliability` is omitted it defaults to `Unstable`. Mark early-mission entry vectors `Reliable` so players aren't blocked by bad RNG at low detection budgets.
+
+## Local privilege escalation
+
+`local_privesc` models a host-side escalation vector that enumeration tools can discover. Once found, it enables the `privesc` command as a deterministic route to root — equivalent to having found a `privesc_key` file in the filesystem.
+
+```ron
+local_privesc: Some((
+    kind: Sudo,
+    note: "sudo vim can spawn a root shell via :!/bin/bash",
+)),
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `kind` | `LocalKind` | Type of escalation vector (see below). |
+| `note` | string | Hint shown to the player on discovery. |
+
+### LocalKind values
+
+| Value | Discovery command | Description |
+|---|---|---|
+| `Sudo` | `sudo -l` | An abusable `sudo` rule (GTFOBin). |
+| `Suid` | `suid` | An abusable SUID binary. |
+| `Kernel` | `sysinfo` | A vulnerable kernel or OS version. |
+| `Cron` | `linpeas` | A root cron job with a writable script. |
+
+`linpeas` discovers all four kinds. The specific commands listed above each find only their own category.
+
+## Full TargetNode example
+
+```ron
+target: (
+    hostname: "web-01.lab.local",
+    ip: "10.0.0.5",
+    os: "Linux 5.x",
+    services: [
+        (port: 80,  name: "http", version: "nginx 1.20"),
+        (port: 22,  name: "ssh",  version: "OpenSSH 8.4"),
+        (port: 3306, name: "mysql", version: "MySQL 8.0",
+         requires: Some("db-access-token")),
+    ],
+    vulnerabilities: [
+        (
+            id: "WEB-LFI",
+            name: "Local file inclusion",
+            affected_service: 80,
+            difficulty: 4,
+            stealth_cost: 5,
+            reliability: Reliable,
+        ),
+        (
+            id: "SSH-WEAK",
+            name: "Weak SSH password",
+            affected_service: 22,
+            difficulty: 6,
+            stealth_cost: 10,
+            reliability: Unstable,
+        ),
+        (
+            id: "MYSQL-RCE",
+            name: "MySQL RCE via UDF",
+            affected_service: 3306,
+            difficulty: 7,
+            stealth_cost: 8,
+            reliability: Unstable,
+        ),
+    ],
+    filesystem: [
+        Dir(name: "home", children: [
+            Dir(name: "www-data", children: [
+                File(
+                    name: "notes.txt",
+                    content: ["TODO: remove default creds"],
+                    loot: Some((
+                        skill: 0.05,
+                        credential: Some("admin:admin"),
+                        note: Some("Found default credentials in notes."),
+                    )),
+                ),
+                File(
+                    name: "db_token",
+                    content: ["db-access-token"],
+                    loot: Some((foothold_token: Some("db-access-token"))),
+                ),
+            ]),
+        ]),
+        Dir(name: "root", children: [
+            File(
+                name: "flag.txt",
+                content: ["FLAG{web01_complete}"],
+                root: true,
+            ),
+        ]),
+    ],
+    accepts_token: None,
+    local_privesc: Some((
+        kind: Sudo,
+        note: "sudo vim can be abused to spawn a shell",
+    )),
+)
+```
+
+<Warning>
+  The `affected_service` port in every `Vulnerability` must match a port listed in the same host's `services`. If it does not, `--doctor` reports an error and the vulnerability is unreachable during gameplay. Double-check port numbers when copying vulnerability blocks between hosts.
+</Warning>

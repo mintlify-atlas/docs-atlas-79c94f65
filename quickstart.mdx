@@ -1,47 +1,157 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with Simterm in 5 Minutes"
+sidebarTitle: "Quickstart"
+description: "Clone Simterm, run the sample campaign, explore every CLI flag, and copy-paste your first custom campaign — all in under five minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+This guide walks you from a fresh machine to a running Simterm session, then shows you every CLI flag the frontend understands, and finally steps you through creating your first campaign by copying the bundled sample. By the end you will have a custom campaign loading, validated, and playable.
 
 ## Prerequisites
 
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
-
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Install Rust stable">
+    Simterm requires Rust stable, edition 2021. Install it from [rustup.rs](https://rustup.rs/):
 
     ```bash
-    npm install your-package
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
     ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+    Verify the installation:
 
     ```bash
-    your-cli init
-    ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
-
-    ```bash
-    your-cli start
+    rustc --version
+    cargo --version
     ```
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Run the sample campaign
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+Clone the repository and launch the bundled sample campaign with a single `cargo run`:
+
+```bash
+git clone https://github.com/0x-unkwn0wn/simterm.git
+cd simterm
+cargo run -p simterm
+```
+
+If no `--campaign` path is provided, Simterm automatically loads `examples/sample_campaign`. The TUI opens in an alternate screen and is fully playable from the first command.
+
+## CLI flags
+
+The `simterm` binary accepts the following flags. Pass them after `--` when using `cargo run`:
+
+**Select a campaign**
+
+```bash
+cargo run -p simterm -- --campaign ./examples/sample_campaign
+```
+
+**Validate without opening the TUI**
+
+`--check` confirms the campaign loads and contains missions. It prints a summary and exits immediately — no TUI is opened.
+
+```bash
+cargo run -p simterm -- --check --campaign ./examples/sample_campaign
+```
+
+**Deep semantic validation**
+
+`--doctor` runs a full semantic analysis: dangling references, unreachable content, bad numeric ranges, and more. It exits with a non-zero code if there are errors, making it suitable for CI.
+
+```bash
+cargo run -p simterm -- --doctor --campaign ./examples/sample_campaign
+```
+
+**Automated playthrough**
+
+`--autoplay` injects real commands into the normal TUI with visible pauses. Use it as an end-to-end playability check.
+
+```bash
+cargo run -p simterm -- --autoplay --campaign ./examples/sample_campaign
+```
+
+**Deterministic automated playthrough**
+
+`--autoplay-deterministic` is a stricter variant that avoids `Unstable` exploits and probabilistic privilege escalation. If no deterministic route is available, it stops and writes the reason to the log — ideal for repeatable CI runs.
+
+```bash
+cargo run -p simterm -- --autoplay-deterministic --campaign ./examples/sample_campaign
+```
+
+<Tip>
+  Combine `--autoplay-deterministic` with `--doctor` in your CI pipeline: `--doctor` catches data errors before runtime, and `--autoplay-deterministic` confirms the campaign is completable without relying on random outcomes.
 </Tip>
+
+**Control autoplay speed**
+
+`--autoplay-delay <ms>` sets the pause between injected commands (default 900 ms). Works with both autoplay modes.
+
+```bash
+cargo run -p simterm -- --autoplay --autoplay-delay 300 --campaign ./examples/sample_campaign
+```
+
+**Disable music**
+
+Simterm plays looped WAV audio when a campaign provides `music/mission_N_theme.wav` files alongside `campaign.ron`. Pass `--no-music` to silence it regardless.
+
+```bash
+cargo run -p simterm -- --no-music --campaign ./examples/sample_campaign
+```
+
+## Create your first campaign
+
+The fastest path to a custom campaign is copying the sample and iterating from there.
+
+<Steps>
+  <Step title="Copy the sample campaign">
+    ```bash
+    cp -r examples/sample_campaign campaigns/my_campaign
+    ```
+
+    The `campaigns/` directory is the conventional local workspace for campaigns under development. It is gitignored by default so private campaign content stays out of the public repository.
+  </Step>
+  <Step title="Edit campaign.ron">
+    Open `campaigns/my_campaign/campaign.ron` in your editor and change the `name`, `description`, and any mission or host fields you want to customize. The file is plain RON — no Rust knowledge required.
+
+    ```bash
+    $EDITOR campaigns/my_campaign/campaign.ron
+    ```
+  </Step>
+  <Step title="Validate the campaign loads">
+    Run `--check` to confirm the loader can parse your changes and that the campaign has at least one mission:
+
+    ```bash
+    cargo run -p simterm -- --check --campaign ./campaigns/my_campaign
+    ```
+
+    A successful check prints the campaign name and mission count, then exits cleanly.
+  </Step>
+  <Step title="Run the semantic validator">
+    Run `--doctor` for a deeper analysis. It catches problems like dangling references to non-existent commands, unreachable missions, or malformed numeric ranges:
+
+    ```bash
+    cargo run -p simterm -- --doctor --campaign ./campaigns/my_campaign
+    ```
+
+    Fix any reported errors before moving on. Warnings are informational — the campaign is still playable.
+  </Step>
+  <Step title="Play your campaign">
+    Once the campaign passes validation, launch the full TUI:
+
+    ```bash
+    cargo run -p simterm -- --campaign ./campaigns/my_campaign
+    ```
+  </Step>
+</Steps>
+
+## What to do next
+
+<CardGroup cols={2}>
+  <Card title="Campaign overview" icon="map" href="/campaigns/overview">
+    Understand the full structure of a campaign directory, the root `campaign.ron` format, missions, themes, and achievements.
+  </Card>
+  <Card title="Commands overview" icon="terminal" href="/commands/overview">
+    Learn which commands are built into the engine, which are frontend-only, and how to define your own declarative commands in campaign data.
+  </Card>
+</CardGroup>

@@ -1,0 +1,222 @@
+---
+title: "Campaign Commands: Declarative Effects and Terminal Output"
+sidebarTitle: "Commands"
+description: "How to author easter eggs, declarative campaign commands with state effects, authored terminal commands, and campaign achievements in Simterm."
+---
+
+Simterm resolves player input through a four-tier stack. Understanding the tiers lets you place your authored content at the right level and avoid conflicts with the engine's built-in mechanics.
+
+## The four command tiers
+
+| Tier | Defined in | State effect | Description |
+|---|---|---|---|
+| **Built-in commands** | Engine Rust code | Yes | The core game verbs: `nmap`, `exploit`, `privesc`, `cat`, `help`, etc. |
+| **Declarative campaign commands** | `campaign.commands` | Yes | Campaign-authored verbs that change flags, trace, achievements, or complete the mission. |
+| **Authored terminal commands** | `campaign.terminal` | No | Realistic-looking shell output for fictional CLIs. Presentational only. |
+| **Easter eggs** | `campaign.easter_eggs` | No | Hidden flavor responses. No state change. |
+
+Resolution order is top to bottom: built-in verbs are checked first and always win. Campaign commands are checked next (after conditions are evaluated). Easter eggs are last — they fire only when no higher tier recognized the verb.
+
+<Note>
+  Built-in verbs always take priority over campaign commands. If you define a campaign command or easter egg with the same trigger as a built-in (e.g. `nmap`), it will never run. `--doctor` reports these as warnings so you can catch them before playtesting.
+</Note>
+
+## Easter eggs
+
+Easter eggs are the simplest tier: they match a verb and print lines. They never alter game state.
+
+```ron
+easter_eggs: [
+    (triggers: ["sudo"], lines: ["Permission denied — this is a simulated environment."]),
+    (triggers: ["date"], lines: ["Internal clock: t={clock}."]),
+    (triggers: ["hello", "hi"], lines: ["Hello, operator. Type 'help' to begin."]),
+],
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `triggers` | string list | Command verbs that fire this easter egg. |
+| `lines` | string list | Lines printed to the log. |
+
+The `{clock}` template in `lines` is replaced with the current mission clock value at display time.
+
+## Declarative campaign commands
+
+`CampaignCommand` entries sit between easter eggs and built-ins. They can print lines **and** apply a sequence of effects to game state. Their availability can be gated by conditions, making them appear and disappear as campaign flags change.
+
+```ron
+commands: [
+    (
+        triggers: ["inspect", "look"],
+        lines: ["You inspect the terminal carefully."],
+        effects: [
+            AddLog("Inspection complete. Flag set."),
+            SetFlag("terminal_inspected"),
+            AddTrace(2.0),
+        ],
+    ),
+    (
+        // Only available after "inspect"; hidden from help and autocomplete.
+        triggers: ["wipe-notes"],
+        hidden: true,
+        conditions: [FlagSet("terminal_inspected")],
+        lines: ["You wipe your notes: trace reduced."],
+        effects: [
+            AddTrace(-3.0),
+            ClearFlag("terminal_inspected"),
+        ],
+    ),
+],
+```
+
+### CampaignCommand fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `triggers` | string list | **required** | Command verbs that run this command. |
+| `lines` | string list | `[]` | Lines printed to the log. `{clock}` is substituted. |
+| `effects` | `CommandEffect` list | `[]` | Ordered effects applied to game state. |
+| `conditions` | `CommandCondition` list | `[]` | All conditions must hold for the command to be available. Unmet → falls through to easter eggs / unknown. |
+| `hidden` | bool | `false` | If `true`, omitted from `help` and autocomplete but still runnable. |
+
+### CommandEffect variants
+
+| Effect | Description |
+|---|---|
+| `AddLog("text")` | Prints an extra line to the log. `{clock}` is substituted. |
+| `SetFlag("name")` | Activates a persistent campaign flag. Flags survive mission transitions and saved progress; `reset` clears them. |
+| `ClearFlag("name")` | Deactivates a persistent campaign flag. |
+| `AddTrace(f32)` | Adds trace (positive) or reduces it (negative). |
+| `UnlockAchievement("id")` | Unlocks the `CampaignAchievement` with that `id`. |
+| `CompleteMission` | Completes the current mission as if the objective had been met. Combine with a `conditions` guard to require a flag first. |
+
+### CommandCondition variants
+
+| Condition | Available when |
+|---|---|
+| `FlagSet("name")` | The named flag is currently active. |
+| `FlagNotSet("name")` | The named flag is **not** currently active. |
+| `Mission("mission-id")` | The current mission has the given `Mission.id`. |
+| `Phase("phase")` | The current phase is at least the named one: `recon`, `enum`, `exploit`, or `post`. |
+
+When any condition fails the verb is treated as unrecognized and falls through to easter eggs or the unknown-command response — so a single verb can seem to appear and disappear depending on state.
+
+## Authored terminal commands (`TerminalCommand`)
+
+`TerminalCommand` entries add realistic-looking output for fictional CLIs and programs the engine cannot synthesize. They are **presentational only** — they do not change game state. For state effects, use `commands` instead.
+
+```ron
+terminal: [
+    (
+        triggers: ["systemctl"],
+        args: [
+            ("status nginx", [
+                "● nginx.service - A high performance web server",
+                "     Active: active (running)",
+                "   Main PID: 812 (nginx)",
+            ]),
+        ],
+        output: ["Usage: systemctl [OPTIONS...] {COMMAND} ..."],
+        exit: 1,
+    ),
+],
+```
+
+### TerminalCommand fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `triggers` | string list | **required** | Command verbs. |
+| `output` | string list | `[]` | Default output when no `args` entry matches the arguments given. |
+| `args` | `(string, string list)` list | `[]` | Per-argument output. The key is the exact argument string after the verb. |
+| `exit` | integer | `0` | Exit code stored in `$?`. Must be `0..=255`. |
+| `hidden` | bool | `false` | If `true`, omitted from `help` and autocomplete. |
+
+### Template variables in output
+
+Both `output` and `args` values support template substitution:
+
+| Template | Replaced with |
+|---|---|
+| `{clock}` | Current mission clock. |
+| `{user}` | Current user (derived from session state). |
+| `{host}` | Short hostname of the current target. |
+| `{ip}` | IP address of the current target. |
+| `{os}` | OS string of the current target. |
+| `{cwd}` | Current working directory. |
+| `{env:NAME}` | Value of environment variable `NAME`. |
+| `$VAR` / `${VAR}` | Value of environment variable `VAR` (shell-style expansion). |
+| `$?` | Exit code of the last command. |
+
+## `env` and `processes`
+
+Two campaign-level fields enrich the shell simulation:
+
+**`env`** — a key/value map of environment variables. They are shown by `env` and `export`, available for `$VAR` expansion in `echo` and `TerminalCommand` output, and a good place to hide clues:
+
+```ron
+env: {
+    "PATH": "/usr/local/bin:/usr/bin:/bin",
+    "APP_ENV": "training",
+    "APP_SECRET": "s3cr3t",   // clue hidden in env
+},
+```
+
+The engine also derives `USER`, `LOGNAME`, `HOME`, `PWD`, `HOSTNAME`, and `SHELL` from session state automatically.
+
+**`processes`** — extra rows appended to the `ps` output beyond those synthesized from the host's `services`:
+
+```ron
+processes: ["root       420  /usr/sbin/cron"],
+```
+
+## Campaign achievements
+
+Campaigns define their own achievements in data. They are displayed with the `logros` command and saved with campaign progress alongside the engine's built-in achievements.
+
+```ron
+achievements: [
+    (
+        id: "read-secret",
+        title: "Secret File",
+        description: "Read the hidden dossier.",
+        trigger: ReadFile("/srv/secret.txt"),
+    ),
+    (
+        id: "finish-op1",
+        title: "First Operation Closed",
+        description: "Complete the first mission.",
+        trigger: CompleteMission("op1"),
+    ),
+    (
+        id: "ending-leak",
+        title: "Burn It Down",
+        description: "Choose the leak ending.",
+        trigger: ChooseEnding(mission: "final-op", choice: 2),
+    ),
+    (
+        id: "campaign-clear",
+        title: "Case Closed",
+        description: "Complete the campaign.",
+        trigger: CampaignComplete,
+    ),
+],
+```
+
+### CampaignAchievement fields
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Stable identifier. Must be unique within the campaign. |
+| `title` | string | Visible achievement title. |
+| `description` | string | Visible description. May be omitted (defaults to empty). |
+| `trigger` | `CampaignAchievementTrigger` | Event that unlocks the achievement. |
+
+### Trigger variants
+
+| Trigger | Unlocks when |
+|---|---|
+| `ReadFile("/path")` | The player reads or decodes that VFS path on any host. |
+| `CompleteMission("mission-id")` | The mission with that `id` is completed. |
+| `ChooseEnding(mission: "id", choice: n)` | The player picks ending `n` (1-based) in that mission. |
+| `CampaignComplete` | The entire campaign is completed. |

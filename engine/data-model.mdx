@@ -1,0 +1,339 @@
+---
+title: "Engine Data Model: Campaign Types Reference"
+sidebarTitle: "Data Model"
+description: "Complete reference for every immutable model type in simterm-engine — Campaign, Mission, TargetNode, FsNode, commands, achievements, and theme."
+---
+
+The engine data model is a tree of plain Rust structs and enums that represents a loaded campaign. All values are deserialized from RON files by `load_campaign` and treated as **immutable** from that point on — neither the engine runtime nor any frontend ever modifies them. All mutation during a play session lives in `GameState`, which holds live pointers into the model. Every type described here lives under `simterm_engine::model::*` and is re-exported from the crate root, so a single `use simterm_engine::*;` brings them all into scope.
+
+## Campaign
+
+`Campaign` is the root value returned by `load_campaign`. It contains everything needed to run a full play session: the mission sequence, branding, flavor content, and declarative extensibility hooks.
+
+```rust
+pub struct Campaign {
+    pub name: String,
+    pub language: Language,
+    pub intro: Vec<String>,
+    pub missions: Vec<Mission>,
+    pub theme: Theme,
+    pub easter_eggs: Vec<EasterEgg>,
+    pub fortunes: Vec<String>,
+    pub signals: Vec<String>,
+    pub achievements: Vec<CampaignAchievement>,
+    pub commands: Vec<CampaignCommand>,
+    pub env: BTreeMap<String, String>,
+    pub processes: Vec<String>,
+    pub terminal: Vec<TerminalCommand>,
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `name` | Display name shown when the campaign starts |
+| `language` | Narrative language for engine-generated text (`Es` or `En`) |
+| `intro` | Lines of lore text shown before the first mission |
+| `missions` | Ordered mission sequence; must not be empty |
+| `theme` | Branding overrides (boot header, prompts, stealth grades, credits) |
+| `easter_eggs` | Hidden flavor commands that print text but never affect game state |
+| `fortunes` | Pool of aphorisms for the `fortune` command |
+| `signals` | Plaintext words for the `signal` minigame (displayed encrypted) |
+| `achievements` | Data-driven achievements specific to this campaign |
+| `commands` | Declarative commands that _can_ mutate game state without writing Rust |
+| `env` | Base environment variables (`PATH`, `APP_SECRET`, etc.) for the target host |
+| `processes` | Extra rows injected into `ps` output beyond the synthesized service processes |
+| `terminal` | Authored realistic CLI commands (presentational only, no game-state effect) |
+
+## Language
+
+```rust
+pub enum Language {
+    Es,
+    En,
+}
+```
+
+Controls the language of engine-generated messages (phase labels, action output, achievement descriptions). Narrative content in the campaign's own fields is always authored in whatever language the campaign author chooses.
+
+## Mission
+
+Each entry in `Campaign.missions` is a `Mission`. The engine runs missions in order; completing one advances to the next.
+
+```rust
+pub struct Mission {
+    pub id: String,
+    pub name: String,
+    pub briefing: Vec<String>,
+    pub detection_limit: f32,
+    pub time_limit: Option<u32>,
+    pub reactive: bool,
+    pub skill: f32,
+    pub root_difficulty: u8,
+    pub objective: Option<String>,
+    pub entry: EntryVector,
+    pub endings: Vec<Ending>,
+    pub target: TargetNode,
+    pub network: Vec<NetHost>,
+    pub music: Option<String>,
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `id` | Stable identifier used in achievement triggers and command conditions |
+| `name` | Human-readable name shown in level headers |
+| `briefing` | Lore lines printed when the mission starts |
+| `detection_limit` | Trace accumulation threshold; reaching it causes defeat (default `100.0`) |
+| `time_limit` | Optional clock-tick ceiling; `None` = no time limit |
+| `reactive` | `true` enables the blue-team defense model (staged counterresponse) |
+| `skill` | Base operator skill for probability calculations (`0.0–1.0`) |
+| `root_difficulty` | Privilege escalation difficulty (`1–10`; default `5`) |
+| `objective` | VFS path of the file to exfiltrate; `None` means root via `privesc` completes the mission |
+| `entry` | How the mission starts (see `EntryVector`) |
+| `endings` | Branching endings shown at mission close; empty = direct close |
+| `target` | The single target host (classic single-host mode) |
+| `network` | Internal network of hosts (multi-host mode); when non-empty `target` is ignored |
+| `music` | Relative path to a music file; `None` falls back to the frontend convention |
+
+### EntryVector
+
+`EntryVector` controls which action the player must take first and what trace cost the opening move carries.
+
+```rust
+pub enum EntryVector {
+    Active,
+    Cold { ports: Vec<u16> },
+    Passive,
+    Pivot { gateway: String },
+}
+```
+
+| Variant | Behavior |
+|---------|----------|
+| `Active` | Standard: player runs `nmap` to discover services, which is noisy |
+| `Cold` | Client already flagged services; mission starts in ENUM with those ports discovered (empty `ports` = all services) |
+| `Passive` | Stealthy: player intercepts traffic with `sniff` one service at a time; `nmap` carries an extra noise penalty |
+| `Pivot` | Target is behind a bastion: player must `connect` before scanning |
+
+## TargetNode
+
+`TargetNode` describes a single compromisable host.
+
+```rust
+pub struct TargetNode {
+    pub hostname: String,
+    pub ip: String,
+    pub os: String,
+    pub services: Vec<Service>,
+    pub vulnerabilities: Vec<Vulnerability>,
+    pub filesystem: Vec<FsNode>,
+    pub accepts_token: Option<String>,
+    pub local_privesc: Option<LocalPrivesc>,
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `hostname` | FQDN of the host (`web-01.corp.internal`) |
+| `ip` | IP address shown in `nmap` and `ifconfig` output |
+| `os` | OS string used in `uname` synthesis |
+| `services` | Exposed services discovered by recon |
+| `vulnerabilities` | Hidden exploitable flaws; the player never reads these directly |
+| `filesystem` | Root of the virtual filesystem explored in POST phase |
+| `accepts_token` | If set, `login` succeeds deterministically when the player holds this token |
+| `local_privesc` | Enumerable local escalation vector (reveals `privesc` deterministic path) |
+
+### Service
+
+```rust
+pub struct Service {
+    pub port: u16,
+    pub name: String,
+    pub version: String,
+    pub requires: Option<String>,
+}
+```
+
+`requires` is a credential token. If set, the service appears in scans but rejects enumeration until the player has collected that token from another host in the campaign.
+
+### Vulnerability
+
+```rust
+pub struct Vulnerability {
+    pub id: String,
+    pub name: String,
+    pub affected_service: u16,
+    pub difficulty: u8,
+    pub stealth_cost: u8,
+    pub reliability: ExploitReliability,
+}
+```
+
+`difficulty` and `stealth_cost` feed the exploit probability formula and detection accumulation respectively. `reliability: Reliable` makes the exploit deterministic (no RNG roll). On mission load, the engine optionally shuffles `difficulty`/`stealth_cost` between vulnerabilities to vary the "easy path" across runs.
+
+## FsNode
+
+The virtual filesystem is a recursive tree of `FsNode` values rooted in `TargetNode.filesystem`.
+
+```rust
+pub enum FsNode {
+    Dir {
+        name: String,
+        children: Vec<FsNode>,
+    },
+    File {
+        name: String,
+        content: Vec<String>,
+        root: bool,
+        loot: Option<Loot>,
+        binary: Option<Binary>,
+        encoding: Option<Encoding>,
+    },
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `name` | Directory or file name (single path component) |
+| `content` | Plaintext lines of the file; shown by `cat` (unless `binary` or `encoding` is set) |
+| `root` | `true` requires root privilege to read the file |
+| `loot` | Mechanical reward granted the first time the file is read |
+| `binary` | If present, `cat` is blocked; player must use `strings`/`disasm`/`solve` |
+| `encoding` | If present, `cat` shows an encoded blob; player decodes with `base64` or `xor` |
+
+### Loot
+
+```rust
+pub struct Loot {
+    pub skill: f32,
+    pub credential: Option<String>,
+    pub note: Option<String>,
+    pub privesc_key: bool,
+    pub foothold_token: Option<String>,
+    pub hash: Option<LootHash>,
+    pub wordlist: bool,
+}
+```
+
+`privesc_key: true` unlocks the deterministic `privesc` safe path for the current host. `foothold_token` is a reusable credential that lets `login` work on a later host that sets `accepts_token` to the same value.
+
+## CampaignCommand
+
+`CampaignCommand` is a data-driven command with real game-state effects. Unlike `EasterEgg` (pure flavor), these commands can modify flags, trace, achievements, or complete the current mission — all without writing Rust.
+
+```rust
+pub struct CampaignCommand {
+    pub triggers: Vec<String>,
+    pub lines: Vec<String>,
+    pub effects: Vec<CommandEffect>,
+    pub conditions: Vec<CommandCondition>,
+    pub hidden: bool,
+}
+```
+
+### CommandEffect
+
+```rust
+pub enum CommandEffect {
+    AddLog(String),
+    SetFlag(String),
+    ClearFlag(String),
+    AddTrace(f32),
+    UnlockAchievement(String),
+    CompleteMission,
+}
+```
+
+| Variant | Effect |
+|---------|--------|
+| `AddLog(text)` | Appends an additional line to the session log |
+| `SetFlag(name)` | Activates a persistent campaign flag |
+| `ClearFlag(name)` | Deactivates a persistent campaign flag |
+| `AddTrace(amount)` | Positive value adds noise; negative value reduces trace |
+| `UnlockAchievement(id)` | Unlocks a `CampaignAchievement` by its id |
+| `CompleteMission` | Closes the current mission as if the objective was met |
+
+### CommandCondition
+
+```rust
+pub enum CommandCondition {
+    FlagSet(String),
+    FlagNotSet(String),
+    Mission(String),
+    Phase(String),
+}
+```
+
+All conditions in `CampaignCommand.conditions` must hold simultaneously. If any fails the command is treated as unrecognized and falls through to easter-egg lookup.
+
+## CampaignAchievement
+
+```rust
+pub struct CampaignAchievement {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub trigger: CampaignAchievementTrigger,
+}
+```
+
+### CampaignAchievementTrigger
+
+```rust
+pub enum CampaignAchievementTrigger {
+    ReadFile(String),
+    CompleteMission(String),
+    ChooseEnding { mission: String, choice: usize },
+    CampaignComplete,
+}
+```
+
+| Variant | Unlocks when… |
+|---------|--------------|
+| `ReadFile(path)` | The player reads or decodes a specific VFS file |
+| `CompleteMission(id)` | The mission with that id is completed |
+| `ChooseEnding { mission, choice }` | The player selects ending `choice` (1-based) on that mission |
+| `CampaignComplete` | The entire campaign is finished |
+
+## Theme
+
+`Theme` holds all branding and cosmetic text for the frontend. Every field has a neutral default so a campaign that omits `theme` entirely is still fully playable.
+
+```rust
+pub struct Theme {
+    pub app_title: String,
+    pub boot_header: String,
+    pub boot_lines: Vec<String>,
+    pub overlay_title: String,
+    pub alert_title: String,
+    pub operator_prompt: String,
+    pub stealth_grades: Vec<String>,
+    pub defense_messages: Vec<String>,
+    pub aborted_lines: Vec<String>,
+    pub credits: Vec<String>,
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `app_title` | Short name in the top bar (e.g. `"BLACKOUT"`) |
+| `boot_header` | Large header in the boot overlay |
+| `boot_lines` | Lines typed out during the boot animation |
+| `operator_prompt` | Shell prompt before the player has a foothold |
+| `stealth_grades` | Four grade labels from best (low trace) to worst — mapped to `detection / detection_limit` quartiles |
+| `defense_messages` | One message per active-defense stage, shown as the blue team reacts |
+| `aborted_lines` | Lines shown when the operation is aborted by trace overflow |
+| `credits` | End-of-campaign credits scroll |
+
+<Note>
+All model types live under `simterm_engine::model::*` and are re-exported at the crate root. You do not need to import sub-modules directly.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Runtime" icon="play" href="/engine/runtime">
+    How GameState consumes the model and how actions mutate it
+  </Card>
+  <Card title="Validation API" icon="check" href="/engine/validation-api">
+    Validate a loaded Campaign before running it
+  </Card>
+</CardGroup>

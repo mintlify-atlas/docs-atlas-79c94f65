@@ -1,0 +1,160 @@
+---
+title: "Simterm Architecture: Engine and Frontend Boundaries"
+sidebarTitle: "Architecture"
+description: "A detailed look at how Simterm separates the reusable engine library from the terminal frontend, and how campaign data flows through both at runtime."
+---
+
+Simterm is designed around a single, hard boundary: reusable framework code lives in the `crates/` workspace and knows nothing about any specific story; all narrative and cosmetic content lives in `.ron` files that are loaded at runtime. This page explains that boundary in depth — the two crates, the engine module layout, the runtime command flow, and the rules that keep the engine and frontend cleanly separated.
+
+## Framework vs. content
+
+Every part of Simterm falls into one of two categories. The table below summarizes the split:
+
+| Area | Framework / Frontend | Campaign / Experience |
+|---|---|---|
+| Location | `crates/` | external `.ron` files |
+| Contains | rules, loader, runtime state, TUI, CLI | missions, hosts, text, endings, theme |
+| License | MIT | chosen by campaign author |
+| Coupling | generic data model only | no Rust code required |
+
+This boundary allows the public repository to remain fully open source while private or commercial experiences are shipped separately. The engine loads them at runtime without recompilation.
+
+## Workspace layout
+
+```text
+crates/
+  engine/           simterm-engine: campaign model, loader, runtime rules
+  simterm/          terminal frontend binary (TUI, CLI, audio)
+docs/               public documentation
+examples/
+  sample_campaign/  neutral example campaign used for tests and modding
+campaigns/          local campaign workspace (gitignored)
+```
+
+`simterm-engine` is a library crate with no `ratatui` or `crossterm` dependency. Any frontend — including a headless test harness or a custom UI — can embed it. `simterm` is the playable terminal binary; it owns terminal rendering and has no campaign content of its own.
+
+## Engine modules
+
+The engine source tree is organized into five top-level modules, each with a distinct responsibility:
+
+```text
+crates/engine/src/
+  model/      immutable campaign data structures
+  runtime/    mutable game state and player actions
+  loader/     campaign loading from directories or .ron files
+  validate/   semantic campaign validation (--doctor)
+  asset/      asset-source abstraction for campaign-adjacent files
+```
+
+**`model/`** — Immutable data structures deserialized from RON. These are the types that campaigns author: `Campaign`, `Mission`, `TargetNode`, `Service`, `Vulnerability`, `FsNode`, `Loot`, `Theme`, `CampaignCommand`, `TerminalCommand`, `EasterEgg`, and more. Once loaded, model values are never mutated.
+
+**`runtime/`** — All mutable state and the actions that transition it. Key files:
+
+- `state.rs` — `GameState`, `Phase`, `AchievementId`, `GameOutcome`, and the full set of achievement identifiers.
+- `actions.rs` — Every player action: recon, enumeration, research, exploit, login, privilege escalation, VFS navigation, cleanup, netmap, pivot, mission completion, and declarative/terminal command dispatch.
+- `sysemu.rs` — Synthesized POSIX system commands (`uname`, `id`, `ps`, `netstat`, `ifconfig`, `env`, `grep`, `head`, `tail`, `wc`, `file`) rendered from `TargetNode` data. Also handles the environment model and `$VAR` expansion.
+- `detection.rs` — Trace accumulation logic.
+- `balance.rs` — Engine-level tuning constants.
+- `probability.rs` — Randomness helpers for imperfect-information outcomes.
+
+**`loader/`** — `load_campaign(path)` accepts a directory containing `campaign.ron` or a direct `.ron` file path, deserializes RON into `Campaign`, and rejects empty campaigns. The frontend's `--check` mode calls this path to confirm a campaign loads without opening the TUI.
+
+**`validate/`** — `validate_campaign(&Campaign, &reserved_verbs) -> ValidationReport` is a pure data analysis with no UI dependency. It powers the frontend's `--doctor` mode and can be reused by any tool or test harness. The engine never imports the frontend command registry; instead, the frontend passes a neutral list of reserved verbs into `validate_campaign`.
+
+**`asset/`** — An `AssetSource` abstraction that lets the engine resolve campaign-adjacent files (music, images, attachments) without depending on the filesystem directly. The frontend provides a `DirAssetSource` rooted at the campaign directory; tests can use `MemAssetSource` or `NoAssets`.
+
+## Runtime flow
+
+The current sample campaign follows a five-phase hacking loop. The engine models this as a phase enum that advances as the player completes objectives:
+
+```text
+RECON → ENUM → EXPLOIT → POST → COMPLETE
+```
+
+The exact opening phase depends on the mission's `EntryVector`:
+
+- **`Active`** — starts before active scanning; the player must run `nmap` or similar tools to discover services.
+- **`Cold`** — starts in enumeration with selected ports already known; skips the noisy scan phase.
+- **`Passive`** — encourages `sniff` instead of active scanning; running `nmap` incurs extra trace.
+- **`Pivot`** — requires `connect` before the target can be scanned; used for multi-host network missions where the player must traverse an intermediate gateway.
+
+<Note>
+  This five-phase loop is one concrete experience built on top of the framework. Future campaigns can model entirely different terminal-native interactions while reusing the same loader, runtime state, frontend, logs, campaign data model, and presentation layer.
+</Note>
+
+## Frontend boundary
+
+The terminal frontend (`simterm` crate) owns a clearly scoped set of responsibilities:
+
+- CLI argument parsing.
+- Loading the selected campaign path and passing it to the engine.
+- Terminal setup and teardown via `ratatui` and `crossterm`.
+- Input handling and command parsing.
+- Presentation-only commands: `help`, `logs`, `status`, `fortunes`, and minigames.
+- Optional audio: per-mission WAV playback via `rodio`, resolved from `<campaign>/music/`. Audio is a frontend-only dependency; the engine has no audio code.
+
+The engine owns all game state transitions. Campaign-specific flavor that looks like a command must be expressed as `easter_eggs` (flavor only) or `commands` (declarative effects) in campaign data — never as Rust branches in the frontend command parser.
+
+<Note>
+  If the engine owned presentation logic, embedding Simterm in a different frontend (a web shell, a test harness, a Discord bot) would require forking the engine. The boundary keeps those options open.
+</Note>
+
+## Command registry
+
+Command metadata — canonical name, aliases, category, summary, usage string, and kind (`engine-built-in`, `frontend-only`, `minigame`, or `flavor-reserved`) — lives in a single frontend registry at `crates/simterm/src/registry.rs`. Autocomplete and help both read from it, so there is exactly one source of truth for the built-in command surface.
+
+Because some commands are presentation-only, the registry lives in the frontend. To let the engine validate campaigns without importing the frontend, the frontend passes a plain list of reserved verb strings (`registry::reserved_verbs()`) into `validate_campaign`. The engine never imports the registry module.
+
+## Declarative command effects
+
+Campaigns can define custom commands in `Campaign.commands` — each with a verb, optional conditions, and a list of effects (`SetFlag`, `AdjustTrace`, `UnlockAchievement`, `CompleteMission`, and more). The parsing and routing of these verbs happens in the frontend, but **their effects execute inside the engine runtime** via `actions::campaign_command`, which mutates `GameState` directly.
+
+```text
+Player types verb
+  → frontend recognizes it as a declarative campaign command
+  → frontend calls actions::campaign_command(&mut game, &command)
+  → engine applies effects: flags, trace, achievements, mission state
+  → frontend reads updated GameState to render the result
+```
+
+The frontend routes the verb and renders output. It never implements the effect. This preserves the engine/frontend boundary: presentation and input in the frontend, state transitions in the engine.
+
+## Terminal emulation
+
+The console emulates a realistic POSIX shell. Two neutral, content-free layers live in the engine (`runtime/sysemu.rs`):
+
+**Synthesized system commands** — `uname`, `id`, `ps`, `netstat`, `ifconfig`, `env`, `grep`, `head`, `tail`, `wc`, and `file` render their output from the existing `TargetNode` model and VFS. Campaign authors get a believable, interactive box from the data they already wrote — no per-command authoring.
+
+**Environment model** — `Campaign.env` supplies base environment variables. The engine derives `USER`, `HOME`, `PWD`, `HOSTNAME`, and `SHELL` from the host definition. Players can `export` overrides for the session. `$VAR` and `$?` expand in command input.
+
+The only authored pieces are campaign data: the `env` map, `processes` (extra rows injected into `ps` output), and `terminal` (authored realistic CLIs for fictional tools). Shell output is always authentic POSIX English regardless of the campaign's narrative `language` setting.
+
+<Note>
+  Unknown verbs return `bash: <verb>: command not found`, exactly as a real shell would. Campaigns can populate `easter_eggs` to intercept specific unknown verbs with flavor text instead.
+</Note>
+
+## Semantic validation
+
+`validate_campaign(&Campaign, &[&str]) -> ValidationReport` is a pure function in the engine's `validate` module. It performs checks that cannot be caught by the RON deserializer alone:
+
+- Dangling references (a command triggers a mission ID that does not exist).
+- Unreachable content (missions that no path can reach).
+- Bad numeric ranges (trace thresholds outside 0–100, exploit success rates outside 0.0–1.0).
+- Reserved verb collisions (a campaign command uses a verb already owned by the frontend).
+
+The report separates `errors` (campaign is broken or unplayable) from `warnings` (campaign is playable but has suspicious data). The `--doctor` CLI flag prints a human-readable version and exits non-zero only on errors.
+
+<CardGroup cols={2}>
+  <Card title="Engine data model" icon="database" href="/engine/data-model">
+    Explore the full set of model types: Campaign, Mission, TargetNode, FsNode, Theme, and more.
+  </Card>
+  <Card title="Engine runtime" icon="gears" href="/engine/runtime">
+    Understand GameState, Phase, and how actions mutate state during a session.
+  </Card>
+  <Card title="Validation API" icon="stethoscope" href="/engine/validation-api">
+    Use validate_campaign in your own tools and test harnesses.
+  </Card>
+  <Card title="Campaign overview" icon="map" href="/campaigns/overview">
+    See how campaign.ron maps onto the model types described here.
+  </Card>
+</CardGroup>

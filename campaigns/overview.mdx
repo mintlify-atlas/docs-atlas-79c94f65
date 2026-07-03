@@ -1,0 +1,157 @@
+---
+title: "Campaign Overview: Structuring a Simterm Experience"
+sidebarTitle: "Overview"
+description: "Learn how Simterm campaigns are structured, what every Campaign struct field does, and how to load and validate your own campaign."
+---
+
+A Simterm **campaign** is a self-contained RON file (or a directory holding one) that the engine loads at runtime. The framework itself ships no story content — every hostname, vulnerability, filesystem, narrative line, and visual theme is authored by you in data. The engine only provides the mechanics to interpret it.
+
+A campaign can be loaded from:
+
+- A **directory** that contains a `campaign.ron` file, or
+- A **direct `.ron` file path**.
+
+## Campaign struct fields
+
+The top-level `Campaign` struct is the root of every campaign file. All fields except `name` and `missions` have safe defaults; define only what your campaign needs.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | **required** | Campaign name shown on launch. |
+| `language` | `en` or `es` | `es` | Language for generic engine/UI text. Campaign story text is not auto-translated. |
+| `intro` | string list | `[]` | Lines displayed when the campaign starts. |
+| `missions` | `Mission` list | **required** | Ordered mission sequence. Must not be empty. |
+| `theme` | `Theme` | neutral defaults | Branding, prompt, grades, and cosmetic UI text. |
+| `easter_eggs` | `EasterEgg` list | `[]` | Hidden flavor commands that do not affect game state. |
+| `fortunes` | string list | generic defaults | Texts used by the `fortune` command (random pick). |
+| `signals` | string list | generic defaults | Plain-text words used by the `signal` minigame. |
+| `achievements` | `CampaignAchievement` list | `[]` | Campaign-defined achievements with declarative triggers. |
+| `commands` | `CampaignCommand` list | `[]` | Declarative commands with state effects (flags, trace, achievements). |
+| `env` | string→string map | `{}` | Environment variables for `env`, `export`, and `$VAR` expansion. |
+| `processes` | string list | `[]` | Extra `ps` rows beyond those synthesized from services. |
+| `terminal` | `TerminalCommand` list | `[]` | Authored realistic shell commands for fictional CLIs (presentational only). |
+
+## Minimal campaign skeleton
+
+The skeleton below contains only the two required fields — `name` and `missions` — with a single host mission. Every omitted field uses its default.
+
+```ron
+Campaign(
+    name: "My Campaign",
+    missions: [
+        Mission(
+            id: "op1",
+            name: "FIRST CONTACT",
+            briefing: ["Map the host and recover the flag."],
+            objective: Some("/root/flag.txt"),
+            target: (
+                hostname: "box-01.lab.local",
+                ip: "10.0.0.10",
+                os: "Linux 5.x",
+                services: [
+                    (port: 80, name: "http", version: "nginx 1.20"),
+                ],
+                vulnerabilities: [
+                    (
+                        id: "WEB-LFI",
+                        name: "Local file inclusion",
+                        affected_service: 80,
+                        difficulty: 4,
+                        stealth_cost: 5,
+                        reliability: Reliable,
+                    ),
+                ],
+                filesystem: [
+                    Dir(name: "home", children: [
+                        Dir(name: "op", children: [
+                            File(
+                                name: "id_rsa",
+                                content: ["local key material"],
+                                loot: Some((privesc_key: true)),
+                            ),
+                        ]),
+                    ]),
+                    Dir(name: "root", children: [
+                        File(
+                            name: "flag.txt",
+                            content: ["FLAG{example}"],
+                            root: true,
+                        ),
+                    ]),
+                ],
+            ),
+        ),
+    ],
+)
+```
+
+## Loading a campaign
+
+Pass `--campaign` with the path to your campaign directory or `.ron` file:
+
+```bash
+cargo run -p simterm -- --campaign ./my_campaign
+```
+
+## Campaign authoring workflow
+
+<Steps>
+  <Step title="Copy the sample campaign">
+    Start from the bundled example so you have a working baseline:
+
+    ```bash
+    cp -r examples/sample_campaign campaigns/my_campaign
+    ```
+  </Step>
+  <Step title="Edit campaign.ron">
+    Open `campaigns/my_campaign/campaign.ron` and replace the example content with your own missions, targets, filesystem trees, and theme text.
+  </Step>
+  <Step title="Run --check">
+    Verify the file parses and contains at least one mission:
+
+    ```bash
+    cargo run -p simterm -- --check --campaign ./campaigns/my_campaign
+    ```
+  </Step>
+  <Step title="Run --doctor">
+    Run the deeper semantic pass to catch dangling references, unreachable content, and out-of-range values:
+
+    ```bash
+    cargo run -p simterm -- --doctor --campaign ./campaigns/my_campaign
+    ```
+  </Step>
+  <Step title="Play">
+    Launch the campaign and test the full loop:
+
+    ```bash
+    cargo run -p simterm -- --campaign ./campaigns/my_campaign
+    ```
+  </Step>
+</Steps>
+
+## Sub-pages in this section
+
+<CardGroup cols={2}>
+  <Card title="Missions" icon="flag" href="/campaigns/missions">
+    Mission fields, entry vectors, endings, and multi-host networks.
+  </Card>
+  <Card title="Targets" icon="server" href="/campaigns/targets">
+    TargetNode, services, vulnerabilities, and local privilege escalation.
+  </Card>
+  <Card title="Filesystem" icon="folder-open" href="/campaigns/filesystem">
+    Virtual filesystem, loot, hash puzzles, binaries, and encoding.
+  </Card>
+  <Card title="Commands" icon="terminal" href="/campaigns/commands">
+    Easter eggs, declarative campaign commands, terminal commands, and achievements.
+  </Card>
+  <Card title="Theming" icon="paintbrush" href="/campaigns/theming">
+    Theme struct, stealth grades, defense messages, fortunes, and signals.
+  </Card>
+  <Card title="Validation" icon="circle-check" href="/campaigns/validation">
+    --check vs --doctor, error and warning reference, and troubleshooting.
+  </Card>
+</CardGroup>
+
+<Note>
+  Campaigns are distributed separately from the Simterm framework. Your campaign directory is self-contained — players run it with `simterm --campaign ./your_campaign`. The framework is MIT licensed; your campaign content can use whatever license you choose.
+</Note>

@@ -1,0 +1,95 @@
+---
+title: "Recon and Discovery Commands in Simterm"
+sidebarTitle: "Recon"
+description: "Reference for Simterm's recon-phase commands: nmap, sniff, connect, and target — including trace costs and EntryVector interactions."
+---
+
+The recon phase is the first step of every operation. Its job is to map the attack surface of the target host — discovering which services are listening and on which ports — so that the enumeration phase can begin. Simterm provides two discovery strategies (active and passive) plus a gateway command for missions where the target is behind a bastion. The right choice depends on your `EntryVector` and how much trace you can afford.
+
+## Command Reference
+
+| Command | Aliases | Purpose |
+|---|---|---|
+| `target` | `host` | Show the current target and discovered services |
+| `nmap` | `scan`, `recon` | Active discovery of all services |
+| `sniff` | `intercept`, `listen` | Passive discovery, one service at a time |
+| `connect [host]` | | Establish gateway access for pivot-entry missions |
+
+---
+
+### `target` / `host`
+
+Displays the current target host information and all services discovered so far. This is a read-only, presentation-only command — it does not advance the clock or add trace. Use it to quickly review what you already know before choosing a tool to enumerate with.
+
+```bash
+target
+```
+
+---
+
+### `nmap` / `scan` / `recon`
+
+Runs an active port scan against the target host, discovering all exposed services at once. Each discovered service is printed with its port, name, version, and inferred category (used for tool affinity during enumeration).
+
+**Clock cost:** `NMAP_TIME` ticks.  
+**Trace cost:** `NMAP_NOISE` — plus an extra `PASSIVE_NMAP_PENALTY` if the operation uses a `Passive` entry vector, because active scanning leaves extra evidence on a monitored target.
+
+Once `nmap` discovers at least one service, the phase automatically advances to `Enum`. Running `nmap` a second time will report no new services if the host is already fully mapped.
+
+```bash
+nmap
+```
+
+---
+
+### `sniff` / `intercept` / `listen`
+
+Intercepts passive network traffic to reveal services one at a time. Each call to `sniff` reveals the next undiscovered service in sequence. It is slower than `nmap` (higher clock cost per service) but generates almost no trace — making it the preferred discovery method on monitored targets.
+
+**Clock cost:** `SNIFF_TIME` ticks per call (passive: slower than a full scan).  
+**Trace cost:** `SNIFF_NOISE` — very low.
+
+Once at least one port is discovered, the phase advances to `Enum`. Call `sniff` repeatedly to reveal all services.
+
+```bash
+sniff
+```
+
+---
+
+### `connect [host]`
+
+Establishes a tunnel through a gateway bastion. This command only has an effect on missions with a `Pivot` entry vector; on all other entry types it reports that no bastion is in use. You must call `connect` before you can run `nmap` or `sniff` against a pivot-entry target.
+
+**Clock cost:** `CONNECT_TIME` ticks.  
+**Trace cost:** `CONNECT_NOISE`.
+
+The optional `host` argument lets you name the gateway explicitly; if omitted, the campaign-defined gateway name is used.
+
+```bash
+connect
+connect bastion-01
+```
+
+---
+
+## EntryVector Interaction
+
+The entry vector defined in the mission affects which recon commands are meaningful and how noisy they are.
+
+| Entry Vector | Recommended approach |
+|---|---|
+| `Active` | Use `nmap` first — full scan, moderate noise, advances to `Enum` immediately |
+| `Passive` | Prefer `sniff` — quieter, one service per call; `nmap` works but adds extra trace penalty |
+| `Pivot` | Run `connect` first to establish the tunnel, then use `nmap` or `sniff` normally |
+| `Cold` | Ports are already known from client intelligence — the phase starts at `Enum`, skip recon entirely |
+
+---
+
+## Phase Advancement
+
+Recon ends and the `Enum` phase begins automatically as soon as at least one port is marked as discovered. You do not need to scan every service before enumerating the ones you already know about.
+
+<Tip>
+On passive-entry operations, `sniff` is almost always the right call over `nmap`. The trace savings compound across a full mission: every point of detection avoided is one less risk of triggering the detection limit or the reactive defense threshold. Only switch to `nmap` if you are under time pressure and need the entire surface mapped in one shot.
+</Tip>

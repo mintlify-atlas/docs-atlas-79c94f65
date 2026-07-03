@@ -1,0 +1,85 @@
+---
+title: "Simterm: A Rust Framework for Terminal-Based Games"
+sidebarTitle: "Introduction"
+description: "Simterm is an open-source Rust framework for building data-driven, command-driven terminal games and campaigns — no Rust required to author content."
+---
+
+Simterm is an open-source Rust framework for building immersive, command-driven terminal games and experiences. This page explains what Simterm is, how it separates reusable engine code from campaign content, and what you can build with it — whether you are evaluating the framework, planning your first campaign, or exploring the source.
+
+## The core mental model
+
+Simterm cleanly separates the **framework** (Rust runtime and terminal frontend) from the **content** (campaign data written in RON). You write missions, hosts, commands, text, and endings as data files; Simterm loads and interprets them at runtime.
+
+```text
+simterm-engine (library) + campaign.ron → terminal experience
+```
+
+The engine has no knowledge of any concrete mission, story, IP address, or brand. Everything narrative or cosmetic lives outside Rust code, in `.ron` files that the loader reads from disk. This boundary means you can ship a private or commercial campaign separately from the open-source framework — the engine loads it at runtime without any recompilation.
+
+<Note>
+  The bundled sample campaign demonstrates a simulated hacking scenario. That scenario is a neutral illustration of the framework's capabilities, not the only kind of experience you can build. Any fiction or system that benefits from a rich, command-driven terminal interface can be expressed as a Simterm campaign.
+</Note>
+
+## Two crates, one clean boundary
+
+Simterm ships as a Cargo workspace with two crates:
+
+- **`simterm-engine`** is a library crate. It contains the campaign data model, the RON loader, mutable game state, player action handlers, terminal emulation helpers, and the semantic validator. It has **no `ratatui` or `crossterm` dependency**, so any frontend — or a headless test harness — can embed it without pulling in a terminal UI.
+
+- **`simterm`** is the playable terminal binary. It parses CLI arguments, loads the campaign chosen by `--campaign`, owns terminal setup and teardown via `ratatui` and `crossterm`, dispatches player input to the engine, and provides optional per-mission audio playback. The frontend contains no campaign content.
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Data-driven campaigns in RON" icon="file-code" href="/campaigns/overview">
+    Missions, hosts, commands, objectives, endings, and theme all live in plain RON files. No Rust required to author or modify a campaign.
+  </Card>
+  <Card title="Virtual filesystem" icon="folder-tree" href="/campaigns/filesystem">
+    Each target host exposes a navigable virtual filesystem with files, loot, hashes, reversible binaries, and encoded content for players to explore.
+  </Card>
+  <Card title="Declarative commands" icon="terminal" href="/commands/overview">
+    Campaigns define custom commands with triggers, conditions, and effects — set flags, adjust trace, unlock achievements, complete missions — entirely in data, without writing Rust.
+  </Card>
+  <Card title="POSIX shell emulation" icon="code" href="/commands/system-shell">
+    Commands like `uname`, `ps`, `netstat`, `ifconfig`, `env`, `grep`, `head`, and `wc` are synthesized from the host definition. Players get a believable shell from data they already wrote.
+  </Card>
+  <Card title="Multi-host network missions" icon="network-wired" href="/campaigns/missions">
+    Missions can model multi-host networks with pivot entry vectors, requiring players to `connect` and `pivot` between machines before reaching the objective.
+  </Card>
+  <Card title="Achievements system" icon="trophy" href="/campaigns/overview">
+    The engine tracks built-in runtime achievements (first foothold, first root, clean operation) and campaigns can declare their own data-driven achievements with triggers like `ReadFile`, `CompleteMission`, and `ChooseEnding`.
+  </Card>
+  <Card title="Autoplay testing modes" icon="play" href="/quickstart">
+    `--autoplay` runs a visible automated playthrough as an end-to-end check. `--autoplay-deterministic` avoids probabilistic paths for strict CI validation. Use `--autoplay-delay` to control cadence.
+  </Card>
+  <Card title="Semantic validation (--doctor)" icon="stethoscope" href="/campaigns/validation">
+    `--doctor` runs a full semantic analysis — dangling references, unreachable content, bad ranges — and exits non-zero on errors. `--check` confirms a campaign loads and has missions without opening the TUI.
+  </Card>
+</CardGroup>
+
+## Repository layout
+
+The repository is a Cargo workspace. Framework code lives under `crates/`; campaign content is loaded at runtime from outside the repository.
+
+```text
+crates/
+  engine/           simterm-engine: campaign model, loader, runtime rules
+  simterm/          terminal frontend and CLI binary
+docs/               public documentation
+examples/
+  sample_campaign/  neutral example campaign used for tests and modding
+campaigns/          local campaign workspace (gitignored)
+```
+
+The `campaigns/` directory is the conventional place to put local or private campaigns during development. It is not part of the open-source repository.
+
+## What's next
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run the sample campaign in under five minutes, explore CLI flags, and copy-paste your first campaign.
+  </Card>
+  <Card title="Campaign overview" icon="map" href="/campaigns/overview">
+    Learn the structure of a campaign directory, the `campaign.ron` root, and how missions chain together.
+  </Card>
+</CardGroup>
